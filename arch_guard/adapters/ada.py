@@ -56,13 +56,44 @@ class AdaAdapter(LanguageAdapter):
         """Ada projects typically have sources under src/."""
         return 'src'
 
+    @property
+    def domain_allowed_external_prefixes(self) -> Set[str]:
+        """
+        Ada standard library packages allowed in Domain layer.
+
+        Domain can use Ada's standard library (it's part of the language),
+        but cannot depend on external crates/libraries.
+        """
+        return {
+            'ada.',           # Ada.Text_IO, Ada.Strings.Bounded, Ada.Containers, etc.
+            'interfaces',     # Interfaces, Interfaces.C, etc.
+            'system',         # System, System.Storage_Elements, etc.
+            'gnat.',          # GNAT-specific extensions (GNAT.IO, etc.)
+        }
+
     def extract_imports(self, file_path: Path) -> List[Tuple[int, str]]:
-        """Extract all 'with' clauses from an Ada file."""
+        """
+        Extract all 'with' clauses from an Ada file's context clause region.
+
+        Ada with-clauses (imports) appear in the context clause BEFORE the
+        compilation unit (package/procedure). Aspect specifications also use
+        'with' keyword but appear AFTER declarations. We only want imports.
+        """
         with_clauses = []
 
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 for line_num, line in enumerate(f, start=1):
+                    stripped = line.strip().lower()
+
+                    # Stop at compilation unit declaration (end of context clause)
+                    # This prevents matching aspect specifications like "with Inline;"
+                    if (stripped.startswith('package ') or
+                        stripped.startswith('procedure ') or
+                        stripped.startswith('function ') or
+                        stripped.startswith('generic')):
+                        break
+
                     # Match: with Package.Name;
                     # Handle multiple packages: with A, B, C;
                     match = re.match(r'^\s*with\s+([^;]+);', line, re.IGNORECASE)
