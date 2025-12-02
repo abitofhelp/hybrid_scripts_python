@@ -236,6 +236,9 @@ class AdaReleaseAdapter(BaseReleaseAdapter):
                 return True
             project_name = name_match.group(1)
 
+            # Check for optional ada-package-name override (for acronyms like TZif)
+            ada_pkg_match = re.search(r'^\s*ada-package-name\s*=\s*"([^"]+)"', content, re.MULTILINE)
+
             # Parse semantic version: MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]
             version_pattern = r'^(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z0-9.]+))?(?:\+([a-zA-Z0-9.]+))?$'
             ver_match = re.match(version_pattern, version_str)
@@ -247,8 +250,12 @@ class AdaReleaseAdapter(BaseReleaseAdapter):
             prerelease = prerelease or ''
             build = build or ''
 
-            # Convert to Ada casing (hybrid_app_ada -> Hybrid_App_Ada)
-            ada_package = '_'.join(part.capitalize() for part in project_name.split('_'))
+            # Use ada-package-name if specified, otherwise auto-generate from project name
+            if ada_pkg_match:
+                ada_package = ada_pkg_match.group(1)
+            else:
+                # Convert to Ada casing (hybrid_app_ada -> Hybrid_App_Ada)
+                ada_package = '_'.join(part.capitalize() for part in project_name.split('_'))
 
             # Generate Ada package source
             ada_code = f'''pragma Ada_2022;
