@@ -270,9 +270,11 @@ class BaseReleaseAdapter(ABC):
         """Find all markdown files with version headers."""
         md_files = []
 
-        # Search in docs and root
+        # Search in docs and root (exclude docs/common submodule)
         for pattern in ["docs/**/*.md", "*.md"]:
-            md_files.extend(project_root.glob(pattern))
+            for f in project_root.glob(pattern):
+                if "/common/" not in str(f):
+                    md_files.append(f)
 
         # Filter to only files with version headers
         versioned_files = []
@@ -455,7 +457,10 @@ class BaseReleaseAdapter(ABC):
 
         all_md_files = []
         for pattern in ["docs/**/*.md", "*.md"]:
-            all_md_files.extend(config.project_root.glob(pattern))
+            for f in config.project_root.glob(pattern):
+                # Exclude docs/common submodule
+                if "/common/" not in str(f):
+                    all_md_files.append(f)
 
         updated_count = 0
 
