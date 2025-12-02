@@ -322,6 +322,14 @@ end {ada_package}.Version;
             # Write output file to src/version/ (cross-cutting, outside hexagonal layers)
             output_path = config.project_root / 'src' / 'version' / f'{project_name}-version.ads'
             output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Check if file exists and content is unchanged
+            if output_path.exists():
+                existing_content = output_path.read_text(encoding='utf-8')
+                if existing_content == ada_code:
+                    print(f"  Version file unchanged (v{version_str})")
+                    return True
+
             output_path.write_text(ada_code, encoding='utf-8')
 
             print(f"  Project: {project_name}")
