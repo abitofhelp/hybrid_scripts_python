@@ -39,7 +39,6 @@ class ReleaseAction(Enum):
     """Release workflow actions."""
     PREPARE = 'prepare'
     RELEASE = 'release'
-    DIAGRAMS = 'diagrams'
     VALIDATE = 'validate'
 
 

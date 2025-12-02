@@ -13,13 +13,11 @@
 # Usage:
 #   python scripts/python/release/release.py prepare <version>
 #   python scripts/python/release/release.py release <version>
-#   python scripts/python/release/release.py diagrams
 #   python scripts/python/release/release.py validate <version>
 #
 # Examples:
 #   python scripts/python/release/release.py prepare 1.0.0
 #   python scripts/python/release/release.py release 1.0.0
-#   python scripts/python/release/release.py diagrams
 #
 # Design Notes:
 #   Uses adapter pattern for language-specific operations.
@@ -484,15 +482,10 @@ If CHANGELOG is already correct, just press ENTER to continue."""
             if not prompt_user_continue(message):
                 return False
 
-    # Step 7: Update CHANGELOG.md
+    # Step 6: Update CHANGELOG.md
     print_info("\nStep 6: Updating CHANGELOG.md...")
     if not update_changelog(config):
         return False
-
-    # Step 7: Generate diagrams
-    print_info("\nStep 7: Generating diagrams...")
-    if not adapter.generate_diagrams(config):
-        print_warning("Could not generate diagrams (continuing)")
 
     # Checkpoint: Review and commit changes
     message = f"""All files have been updated for release {config.version}
@@ -515,14 +508,14 @@ After committing, press ENTER to continue with build and test verification."""
     if not prompt_user_continue(message):
         return False
 
-    # Step 8: Build verification
-    print_info("\nStep 8: Running build...")
+    # Step 7: Build verification
+    print_info("\nStep 7: Running build...")
     if not adapter.run_build(config):
         print_error("Build failed")
         return False
 
-    # Step 9: Test verification
-    print_info("\nStep 9: Running tests...")
+    # Step 8: Test verification
+    print_info("\nStep 8: Running tests...")
     if not adapter.run_tests(config):
         print_error("Tests failed")
         return False
@@ -587,15 +580,6 @@ def create_release(config, adapter) -> bool:
     return True
 
 
-def generate_diagrams_only(config, adapter) -> bool:
-    """Generate diagrams without full release."""
-    print_section(f"\n{'='*70}")
-    print_section(f"GENERATING DIAGRAMS ({adapter.name})")
-    print_section(f"{'='*70}\n")
-
-    return adapter.generate_diagrams(config)
-
-
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -605,7 +589,6 @@ def main():
 Examples:
   %(prog)s prepare 1.0.0     Prepare release (update files, build, test)
   %(prog)s release 1.0.0     Create release (tag, push, GitHub release)
-  %(prog)s diagrams          Generate PlantUML diagrams only
 
 The script auto-detects the project language (Go/Ada) and applies
 the appropriate release workflow.
@@ -614,7 +597,7 @@ the appropriate release workflow.
 
     parser.add_argument(
         'action',
-        choices=['prepare', 'release', 'diagrams', 'validate'],
+        choices=['prepare', 'release', 'validate'],
         help='Action to perform'
     )
 
@@ -703,8 +686,6 @@ the appropriate release workflow.
             success = prepare_release(config, adapter)
         elif args.action == 'release':
             success = create_release(config, adapter)
-        elif args.action == 'diagrams':
-            success = generate_diagrams_only(config, adapter)
         elif args.action == 'validate':
             # Future: add validation-only mode
             print_info("Validate action not yet implemented")

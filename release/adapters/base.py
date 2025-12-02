@@ -494,42 +494,6 @@ class BaseReleaseAdapter(ABC):
 
         return updated_count
 
-    def generate_diagrams(self, config) -> bool:
-        """Generate PlantUML diagrams."""
-        try:
-            subprocess.run(
-                ["plantuml", "-version"],
-                capture_output=True,
-                check=True
-            )
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            print("  plantuml not found, skipping diagram generation")
-            return True
-
-        diagrams_dir = config.project_root / "docs" / "diagrams"
-        if not diagrams_dir.exists():
-            print("  No diagrams directory found")
-            return True
-
-        puml_files = list(diagrams_dir.glob("*.puml"))
-        if not puml_files:
-            print("  No PlantUML files found")
-            return True
-
-        if getattr(config, 'dry_run', False):
-            print(f"  [DRY-RUN] Would generate {len(puml_files)} diagram(s)")
-            return True
-
-        for puml_file in puml_files:
-            self.run_command(
-                ["plantuml", "-tsvg", str(puml_file)],
-                config.project_root,
-                capture_output=True
-            )
-
-        print(f"  Generated {len(puml_files)} diagram(s)")
-        return True
-
     def validate_links(self, config) -> bool:
         """
         Validate links in documentation files.

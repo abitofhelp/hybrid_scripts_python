@@ -12,7 +12,6 @@ Usage:
     # From project root (recommended):
     python3 scripts/python/release/release.py prepare 1.0.0
     python3 scripts/python/release/release.py release 1.0.0
-    python3 scripts/python/release/release.py diagrams
 
     # Or from scripts directory:
     cd scripts/python && python3 -m release prepare 1.0.0
