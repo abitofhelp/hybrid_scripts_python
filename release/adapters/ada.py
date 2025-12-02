@@ -236,8 +236,12 @@ class AdaReleaseAdapter(BaseReleaseAdapter):
                 return True
             project_name = name_match.group(1)
 
-            # Check for optional ada-package-name override (for acronyms like TZif)
-            ada_pkg_match = re.search(r'^\s*ada-package-name\s*=\s*"([^"]+)"', content, re.MULTILINE)
+            # Check for optional ada-package-name override in .release.toml (for acronyms like TZif)
+            ada_pkg_match = None
+            release_toml = config.project_root / '.release.toml'
+            if release_toml.exists():
+                release_content = release_toml.read_text(encoding='utf-8')
+                ada_pkg_match = re.search(r'^\s*ada-package-name\s*=\s*"([^"]+)"', release_content, re.MULTILINE)
 
             # Parse semantic version: MAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]
             version_pattern = r'^(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z0-9.]+))?(?:\+([a-zA-Z0-9.]+))?$'
