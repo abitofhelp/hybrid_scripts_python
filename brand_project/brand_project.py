@@ -148,29 +148,43 @@ def brand_project(config: ProjectConfig, verbose: bool = False) -> bool:
         return False
     print_success(f"Copied {file_count} files")
 
-    # Step 2: Rename files
-    print_section(f"\n{dry_run_prefix}Step 2: Renaming files...")
+    # Step 2: Set up docs structure
+    print_section(f"\n{dry_run_prefix}Step 2: Setting up docs structure...")
+    if adapter.setup_docs_structure(config, verbose):
+        print_success("Set up docs structure (common/, diagrams/, guides/, formal/, index.md, quick_start.md)")
+    else:
+        print_warning("Could not set up docs structure")
+
+    # Step 3: Rename files
+    print_section(f"\n{dry_run_prefix}Step 3: Renaming files...")
     renamed = adapter.rename_files(config, verbose)
     print_success(f"Renamed {len(renamed)} files")
     if verbose and renamed:
         for f in renamed:
             print_info(f"  - {f}")
 
-    # Step 3: Replace in file contents
-    print_section(f"\n{dry_run_prefix}Step 3: Replacing text in files...")
+    # Step 4: Replace in file contents
+    print_section(f"\n{dry_run_prefix}Step 4: Replacing text in files...")
     modified = adapter.replace_in_files(config, verbose)
     print_success(f"Modified {modified} files")
 
-    # Step 4: Update language-specific config
-    print_section(f"\n{dry_run_prefix}Step 4: Updating config files...")
+    # Step 5: Update language-specific config
+    print_section(f"\n{dry_run_prefix}Step 5: Updating config files...")
     updated = adapter.update_config_files(config)
     print_success(f"Updated {len(updated)} config files")
     if verbose and updated:
         for f in updated:
             print_info(f"  - {f}")
 
-    # Step 5: Verify no old references remain
-    print_section(f"\n{dry_run_prefix}Step 5: Verifying no old references...")
+    # Step 6: Reset CHANGELOG.md to fresh state
+    print_section(f"\n{dry_run_prefix}Step 6: Resetting CHANGELOG.md...")
+    if adapter.reset_changelog(config, verbose):
+        print_success("Reset CHANGELOG.md to fresh state")
+    else:
+        print_warning("Could not reset CHANGELOG.md")
+
+    # Step 7: Verify no old references remain
+    print_section(f"\n{dry_run_prefix}Step 7: Verifying no old references...")
     if not config.dry_run:
         remaining = adapter.verify_no_old_references(config)
         if remaining:
@@ -184,6 +198,13 @@ def brand_project(config: ProjectConfig, verbose: bool = False) -> bool:
     else:
         print_info("[DRY RUN] Skipping verification")
 
+    # Step 8: Initialize git and submodules
+    print_section(f"\n{dry_run_prefix}Step 8: Initializing git and submodules...")
+    if adapter.initialize_git_and_submodules(config, verbose):
+        print_success("Initialized git repository and submodules")
+    else:
+        print_warning("Could not initialize git/submodules (manual setup required)")
+
     # Summary
     print_section("\n" + "=" * 70)
     if config.dry_run:
@@ -193,7 +214,6 @@ def brand_project(config: ProjectConfig, verbose: bool = False) -> bool:
         print_success("Project branding complete!")
         print_info(f"\nNext steps:")
         print_info(f"  cd {config.target_dir}")
-        print_info(f"  git init")
         print_info(f"  git add .")
         print_info(f'  git commit -m "Initial commit from template"')
         print_info(f"  git remote add origin {config.new_repo.clone_url}")
@@ -218,11 +238,13 @@ Examples:
 
 The script will:
   1. Detect the template language (Go/Ada/Rust)
-  2. Copy template files (excluding build artifacts)
-  3. Rename files containing template name
-  4. Replace template name in file contents
-  5. Update language-specific config (go.mod, alire.toml, etc.)
-  6. Verify no old references remain
+  2. Copy template files (excluding build artifacts, docs handled separately)
+  3. Set up docs structure (docs/common submodule, diagrams/, guides/, formal/)
+  4. Rename files containing template name
+  5. Replace template name in file contents
+  6. Update language-specific config (go.mod, alire.toml, etc.)
+  7. Reset CHANGELOG.md to fresh state (before any release)
+  8. Verify no old references remain
         """
     )
 
