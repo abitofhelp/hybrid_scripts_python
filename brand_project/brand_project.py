@@ -20,7 +20,7 @@
 import argparse
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Tuple
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -108,6 +108,93 @@ def detect_template_name(source_dir: Path, language: Language) -> str:
 
     # Fallback: use directory name
     return to_snake_case(source_dir.name)
+
+
+def validate_generated_project(target_dir: Path, language: Language) -> Tuple[bool, List[str]]:
+    """
+    Validate the generated project structure.
+
+    Args:
+        target_dir: Path to generated project
+        language: Project language
+
+    Returns:
+        Tuple of (all_passed, list of failure messages)
+    """
+    failures = []
+
+    # Check submodules
+    submodules = [
+        ("docs/common", "Shared documentation"),
+        ("scripts/python", "Python build/test scripts"),
+        ("test/python", "Python test utilities"),
+    ]
+    for submodule_path, description in submodules:
+        full_path = target_dir / submodule_path
+        git_file = full_path / ".git"
+        if not full_path.exists():
+            failures.append(f"Missing submodule directory: {submodule_path}")
+        elif not git_file.exists():
+            failures.append(f"Not a submodule (no .git): {submodule_path}")
+
+    # Check required directories
+    common_dirs = ["docs", "docs/common", "docs/diagrams", "docs/guides",
+                   "scripts/python", "test", "test/python"]
+    if language == Language.ADA:
+        common_dirs.extend(["src/api", "src/application", "src/domain",
+                           "src/infrastructure", "test/unit", "test/integration", "test/common"])
+    elif language == Language.GO:
+        common_dirs.extend(["internal/domain", "internal/application", "internal/infrastructure"])
+
+    for dir_path in common_dirs:
+        if not (target_dir / dir_path).is_dir():
+            failures.append(f"Missing directory: {dir_path}")
+
+    # Check required files
+    common_files = ["README.md", "CHANGELOG.md", "LICENSE", ".gitignore", ".gitmodules", "Makefile"]
+    if language == Language.ADA:
+        common_files.extend(["alire.toml", "test/alire.toml"])
+    elif language == Language.GO:
+        common_files.append("go.mod")
+
+    for file_path in common_files:
+        if not (target_dir / file_path).is_file():
+            failures.append(f"Missing file: {file_path}")
+
+    # Check no cache files at root
+    cache_files = [".als-alire", ".DS_Store"]
+    for cache_file in cache_files:
+        if (target_dir / cache_file).exists():
+            failures.append(f"Cache file should not exist: {cache_file}")
+
+    # Ada-specific checks
+    if language == Language.ADA:
+        # Check main alire.toml does NOT have gnatcov
+        main_alire = target_dir / "alire.toml"
+        if main_alire.exists():
+            content = main_alire.read_text()
+            if "gnatcov" in content.lower():
+                failures.append("Main alire.toml should NOT contain gnatcov")
+
+        # Check test/alire.toml HAS gnatcov
+        test_alire = target_dir / "test" / "alire.toml"
+        if test_alire.exists():
+            content = test_alire.read_text()
+            if "gnatcov" not in content.lower():
+                failures.append("test/alire.toml should contain gnatcov")
+
+        # Check Makefile uses nested crate pattern
+        makefile = target_dir / "Makefile"
+        if makefile.exists():
+            content = makefile.read_text()
+            if "cd test && alr exec --" not in content:
+                failures.append("Makefile coverage targets should use 'cd test && alr exec --'")
+
+        # Check GPR file exists
+        if not list(target_dir.glob("*.gpr")):
+            failures.append("Missing GPR project file")
+
+    return (len(failures) == 0, failures)
 
 
 def brand_project(config: ProjectConfig, verbose: bool = False) -> bool:
@@ -204,6 +291,19 @@ def brand_project(config: ProjectConfig, verbose: bool = False) -> bool:
         print_success("Initialized git repository and submodules")
     else:
         print_warning("Could not initialize git/submodules (manual setup required)")
+
+    # Step 9: Validate generated project
+    print_section(f"\n{dry_run_prefix}Step 9: Validating generated project...")
+    if not config.dry_run:
+        valid, failures = validate_generated_project(config.target_dir, config.language)
+        if valid:
+            print_success("All structure validation checks passed")
+        else:
+            print_warning(f"Structure validation found {len(failures)} issue(s):")
+            for failure in failures:
+                print_warning(f"  - {failure}")
+    else:
+        print_info("[DRY RUN] Skipping validation")
 
     # Summary
     print_section("\n" + "=" * 70)
