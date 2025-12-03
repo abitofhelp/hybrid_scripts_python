@@ -18,6 +18,7 @@
 # ==============================================================================
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional, List, Tuple
@@ -226,6 +227,27 @@ def brand_project(config: ProjectConfig, verbose: bool = False) -> bool:
     print_info(f"New name: {config.new_name}")
     print_info(f"New repo: {config.new_repo.https_url}")
     print()
+
+    # Step 0: Update REF submodules to latest
+    print_section(f"\n{dry_run_prefix}Step 0: Updating REF template submodules...")
+    if not config.dry_run:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(config.source_dir), "submodule", "update", "--remote", "--merge"],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            if result.returncode == 0:
+                print_success("REF submodules updated to latest")
+            else:
+                print_warning(f"Could not update REF submodules: {result.stderr.strip()}")
+        except subprocess.TimeoutExpired:
+            print_warning("Submodule update timed out - continuing with current state")
+        except Exception as e:
+            print_warning(f"Could not update REF submodules: {e}")
+    else:
+        print_info("[DRY RUN] Would update REF submodules")
 
     # Step 1: Copy template
     print_section(f"\n{dry_run_prefix}Step 1: Copying template files...")
