@@ -38,6 +38,7 @@ class Config:
 
     def __init__(self, root: Path):
         self.root = root
+        self.test_dir = root / "test"  # Directory with alire.toml containing gnatcov
         self.unit_tests_gpr = root / "test" / "unit" / "unit_tests.gpr"
         self.integration_tests_gpr = root / "test" / "integration" / "integration_tests.gpr"
         self.unit_runner = root / "test" / "bin" / "unit_runner"
@@ -194,7 +195,7 @@ def instrument_tests(cfg: Config, run_unit: bool, run_integration: bool) -> bool
                 "--level=stmt+decision",
                 "--dump-trigger=atexit",
                 "--dump-channel=bin-file",
-            ], env=env)
+            ], cwd=cfg.test_dir, env=env)
         except subprocess.CalledProcessError:
             print("✗ Unit test instrumentation failed")
             return False
@@ -208,7 +209,7 @@ def instrument_tests(cfg: Config, run_unit: bool, run_integration: bool) -> bool
                 "--level=stmt+decision",
                 "--dump-trigger=atexit",
                 "--dump-channel=bin-file",
-            ], env=env)
+            ], cwd=cfg.test_dir, env=env)
         except subprocess.CalledProcessError:
             print("✗ Integration test instrumentation failed")
             return False
@@ -237,7 +238,7 @@ def build_instrumented_tests(cfg: Config, run_unit: bool, run_integration: bool)
                 "-P", str(cfg.unit_tests_gpr),
                 "--src-subdirs=gnatcov-instr",
                 "--implicit-with=gnatcov_rts_full.gpr",
-            ], env=env)
+            ], cwd=cfg.test_dir, env=env)
         except subprocess.CalledProcessError:
             print("✗ Unit test build failed")
             return False
@@ -250,7 +251,7 @@ def build_instrumented_tests(cfg: Config, run_unit: bool, run_integration: bool)
                 "-P", str(cfg.integration_tests_gpr),
                 "--src-subdirs=gnatcov-instr",
                 "--implicit-with=gnatcov_rts_full.gpr",
-            ], env=env)
+            ], cwd=cfg.test_dir, env=env)
         except subprocess.CalledProcessError:
             print("✗ Integration test build failed")
             return False
@@ -339,7 +340,7 @@ def generate_reports(cfg: Config) -> bool:
             "--annotate=html",
             "--output-dir", str(cfg.report_dir),
             f"@{trace_list}",
-        ])
+        ], cwd=cfg.test_dir)
     except subprocess.CalledProcessError:
         print("✗ HTML report generation failed")
         return False
@@ -354,7 +355,7 @@ def generate_reports(cfg: Config) -> bool:
             "--sid", f"@{sid_list}",
             "--annotate=report",
             f"@{trace_list}",
-        ], capture=True, check=False)
+        ], cwd=cfg.test_dir, capture=True, check=False)
         with open(summary_file, "w") as f:
             f.write(result.stdout)
     except subprocess.CalledProcessError:
