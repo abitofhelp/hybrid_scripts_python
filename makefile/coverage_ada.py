@@ -82,9 +82,9 @@ def run_cmd(cmd: list[str], cwd: Path | None = None, env: dict | None = None,
 
 
 def run_alr(args: list[str], cwd: Path | None = None, env: dict | None = None,
-            check: bool = True) -> subprocess.CompletedProcess:
+            check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
     """Run a command via 'alr exec --'."""
-    return run_cmd(["alr", "exec", "--"] + args, cwd=cwd, env=env, check=check)
+    return run_cmd(["alr", "exec", "--"] + args, cwd=cwd, env=env, check=check, capture=capture)
 
 
 # =============================================================================
