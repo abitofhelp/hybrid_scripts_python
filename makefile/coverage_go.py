@@ -6,12 +6,13 @@ Consolidated script that handles:
 1. Running tests with coverage profiling
 2. Generating HTML and text coverage reports
 
+Automatically detects Go workspaces (go.work) and tests all workspace modules.
+
 Usage:
-    python3 coverage_go.py [--verbose] [--packages PATTERN]
+    python3 coverage_go.py [--verbose]
 
 Options:
-    --verbose           Show detailed test output
-    --packages PATTERN  Package pattern to test (default: ./...)
+    --verbose    Show detailed test output
 
 Output:
     coverage/report/index.html  - HTML coverage report
@@ -45,10 +46,10 @@ class Config:
 # =============================================================================
 
 def find_project_root() -> Path:
-    """Find the project root (directory containing go.mod)."""
+    """Find the project root (directory containing go.mod or go.work)."""
     current = Path.cwd()
     for parent in [current] + list(current.parents):
-        if (parent / "go.mod").exists():
+        if (parent / "go.work").exists() or (parent / "go.mod").exists():
             return parent
     # Fallback: use git root
     try:
@@ -59,6 +60,40 @@ def find_project_root() -> Path:
         return Path(result.stdout.strip())
     except subprocess.CalledProcessError:
         return current
+
+
+def get_workspace_packages(root: Path) -> list[str]:
+    """Parse go.work to get workspace module paths for testing."""
+    go_work = root / "go.work"
+    if not go_work.exists():
+        return ["./..."]
+
+    packages = []
+    with open(go_work) as f:
+        in_use_block = False
+        for line in f:
+            line = line.strip()
+            # Handle "use (" block
+            if line.startswith("use ("):
+                in_use_block = True
+                continue
+            if in_use_block:
+                if line == ")":
+                    in_use_block = False
+                    continue
+                # Parse module path (remove comments, handle ./path format)
+                if line and not line.startswith("//"):
+                    module_path = line.split("//")[0].strip()
+                    if module_path and module_path != ".":
+                        # Convert ./path to ./path/...
+                        packages.append(f"{module_path}/...")
+            # Handle single-line "use ./path"
+            elif line.startswith("use ") and "(" not in line:
+                module_path = line[4:].split("//")[0].strip()
+                if module_path and module_path != ".":
+                    packages.append(f"{module_path}/...")
+
+    return packages if packages else ["./..."]
 
 
 def run_cmd(cmd: list[str], cwd: Path | None = None, env: dict | None = None,
@@ -76,7 +111,7 @@ def run_cmd(cmd: list[str], cwd: Path | None = None, env: dict | None = None,
 # Step 1: Run Tests with Coverage
 # =============================================================================
 
-def run_tests_with_coverage(cfg: Config, packages: str, verbose: bool) -> bool:
+def run_tests_with_coverage(cfg: Config, packages: list[str], verbose: bool) -> bool:
     """Run Go tests with coverage profiling."""
     print("\n" + "=" * 70)
     print("Step 1: Run Tests with Coverage")
@@ -95,9 +130,9 @@ def run_tests_with_coverage(cfg: Config, packages: str, verbose: bool) -> bool:
     if verbose:
         cmd.append("-v")
 
-    cmd.append(packages)
+    cmd.extend(packages)
 
-    print(f"\n  Testing packages: {packages}")
+    print(f"\n  Testing packages: {' '.join(packages)}")
     try:
         run_cmd(cmd, cwd=cfg.root)
     except subprocess.CalledProcessError:
@@ -189,23 +224,24 @@ def main() -> int:
         "--verbose", "-v", action="store_true",
         help="Show detailed test output"
     )
-    parser.add_argument(
-        "--packages", default="./...",
-        help="Package pattern to test (default: ./...)"
-    )
     args = parser.parse_args()
 
     # Find project and configure
     root = find_project_root()
     cfg = Config(root)
 
+    # Detect workspace packages
+    packages = get_workspace_packages(root)
+
     print("=" * 70)
     print("Go Coverage Analysis")
     print("=" * 70)
     print(f"Project root: {root}")
+    if (root / "go.work").exists():
+        print("Workspace detected: go.work")
 
     # Execute steps
-    if not run_tests_with_coverage(cfg, args.packages, args.verbose):
+    if not run_tests_with_coverage(cfg, packages, args.verbose):
         return 1
 
     if not generate_reports(cfg):
