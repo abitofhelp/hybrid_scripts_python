@@ -145,3 +145,79 @@ def detect_package_manager() -> Optional[str]:
             return manager
 
     return None
+
+
+def configure_xmlada_dependency(project_root, verbose: bool = False) -> bool:
+    """
+    Configure xmlada dependency in Alire cache.
+
+    When Alire pulls xmlada as a transitive dependency (via gnatcoll/libgpr),
+    it doesn't run configure, leaving xmlada_shared.gpr missing. This function
+    finds xmlada directories in the test crate's Alire cache and runs configure.
+
+    Args:
+        project_root: Path to the project root (containing test/alire/cache)
+        verbose: Print detailed progress
+
+    Returns:
+        True if xmlada was configured (or already configured), False on error
+    """
+    from pathlib import Path
+
+    if isinstance(project_root, str):
+        project_root = Path(project_root)
+
+    cache_dir = project_root / "test" / "alire" / "cache" / "dependencies"
+    if not cache_dir.exists():
+        if verbose:
+            print_info(f"No Alire cache at {cache_dir}")
+        return True  # Not an error - cache may not exist yet
+
+    # Find xmlada directories
+    xmlada_dirs = list(cache_dir.glob("xmlada_*"))
+    if not xmlada_dirs:
+        if verbose:
+            print_info("No xmlada dependency found in cache")
+        return True  # Not an error - project may not need xmlada
+
+    configured_count = 0
+    for xmlada_dir in xmlada_dirs:
+        shared_gpr = xmlada_dir / "xmlada_shared.gpr"
+        configure_script = xmlada_dir / "configure"
+
+        if shared_gpr.exists():
+            if verbose:
+                print_info(f"xmlada already configured: {xmlada_dir.name}")
+            configured_count += 1
+            continue
+
+        if not configure_script.exists():
+            print_warning(f"No configure script in {xmlada_dir.name}")
+            continue
+
+        # Run configure
+        if verbose:
+            print_info(f"Configuring {xmlada_dir.name}...")
+
+        try:
+            result = subprocess.run(
+                ["./configure"],
+                cwd=str(xmlada_dir),
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+            if result.returncode == 0:
+                if shared_gpr.exists():
+                    print_success(f"Configured xmlada: {xmlada_dir.name}")
+                    configured_count += 1
+                else:
+                    print_warning(f"Configure ran but xmlada_shared.gpr not created")
+            else:
+                print_warning(f"Configure failed: {result.stderr.strip()}")
+        except subprocess.TimeoutExpired:
+            print_warning(f"Configure timed out for {xmlada_dir.name}")
+        except Exception as e:
+            print_warning(f"Error configuring xmlada: {e}")
+
+    return configured_count == len(xmlada_dirs)

@@ -25,7 +25,7 @@ from typing import Optional, List, Tuple
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from common import print_success, print_error, print_warning, print_info, print_section
+from common import print_success, print_error, print_warning, print_info, print_section, configure_xmlada_dependency
 
 # Support both direct script execution and module import
 try:
@@ -326,6 +326,17 @@ def brand_project(config: ProjectConfig, verbose: bool = False) -> bool:
                 print_warning(f"  - {failure}")
     else:
         print_info("[DRY RUN] Skipping validation")
+
+    # Step 10: Configure xmlada (Ada projects only)
+    if config.language == Language.ADA:
+        print_section(f"\n{dry_run_prefix}Step 10: Configuring xmlada dependency...")
+        if not config.dry_run:
+            if configure_xmlada_dependency(config.target_dir, verbose):
+                print_success("xmlada dependency configured (if present)")
+            else:
+                print_warning("Some xmlada directories could not be configured")
+        else:
+            print_info("[DRY RUN] Would configure xmlada dependency if present")
 
     # Summary
     print_section("\n" + "=" * 70)
