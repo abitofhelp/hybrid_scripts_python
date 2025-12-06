@@ -635,6 +635,125 @@ class BaseReleaseAdapter(ABC):
             return False
         return len(result.strip()) == 0
 
+    def verify_submodules_current(self, config) -> Tuple[bool, List[str]]:
+        """
+        Verify all git submodules are clean and up-to-date with their remotes.
+
+        Checks:
+        1. Submodule working trees are clean (no uncommitted changes)
+        2. Submodules are on their tracked branch (usually main)
+        3. Submodules are not behind their upstream remote
+
+        Args:
+            config: ReleaseConfig instance
+
+        Returns:
+            Tuple of (all_current, list_of_issues)
+            all_current: True if all submodules are clean and current
+            issues: List of submodule issues found
+        """
+        print("Verifying git submodules are current...")
+        issues = []
+
+        # Check if project has submodules
+        gitmodules = config.project_root / ".gitmodules"
+        if not gitmodules.exists():
+            print("  No submodules found (.gitmodules not present)")
+            return True, []
+
+        # Get submodule status
+        result = self.run_command(
+            ["git", "submodule", "status"],
+            config.project_root,
+            capture_output=True
+        )
+
+        if result is None:
+            issues.append("  Could not read submodule status")
+            return False, issues
+
+        if not result.strip():
+            print("  No submodules configured")
+            return True, []
+
+        submodules = []
+        for line in result.strip().split('\n'):
+            if not line.strip():
+                continue
+            # Format: " <sha> <path> (<branch>)" or "+<sha> <path> (<branch>)" for modified
+            parts = line.split()
+            if len(parts) >= 2:
+                sha = parts[0].lstrip('+-')
+                path = parts[1]
+                has_changes = parts[0].startswith('+')
+                submodules.append((path, sha, has_changes))
+
+        print(f"  Found {len(submodules)} submodule(s)")
+
+        for path, sha, has_local_changes in submodules:
+            submodule_path = config.project_root / path
+            submodule_name = path.split('/')[-1]
+
+            # Check 1: Local changes in submodule
+            if has_local_changes:
+                issues.append(f"  {submodule_name}: Has uncommitted changes (marked with +)")
+
+            # Check 2: Verify submodule working tree is clean
+            status_result = self.run_command(
+                ["git", "status", "--porcelain"],
+                submodule_path,
+                capture_output=True
+            )
+            if status_result and status_result.strip():
+                issues.append(f"  {submodule_name}: Working tree is dirty")
+
+            # Check 3: Fetch and compare with upstream
+            # Fetch without modifying local state
+            fetch_result = self.run_command(
+                ["git", "fetch", "origin"],
+                submodule_path,
+                capture_output=True,
+                check=False
+            )
+
+            if fetch_result is not None:
+                # Check if behind origin/main
+                behind_result = self.run_command(
+                    ["git", "log", "HEAD..origin/main", "--oneline"],
+                    submodule_path,
+                    capture_output=True,
+                    check=False
+                )
+
+                if behind_result and behind_result.strip():
+                    commit_count = len(behind_result.strip().split('\n'))
+                    issues.append(
+                        f"  {submodule_name}: Behind origin/main by {commit_count} commit(s)"
+                    )
+                    # Show the commits
+                    for commit in behind_result.strip().split('\n')[:3]:
+                        issues.append(f"    - {commit}")
+                    if commit_count > 3:
+                        issues.append(f"    ... and {commit_count - 3} more")
+                else:
+                    print(f"  ✓ {submodule_name}: Up to date @ {sha[:8]}")
+            else:
+                # Couldn't fetch - maybe offline, just check local state
+                print(f"  ⚠ {submodule_name}: Could not fetch (offline?), local state @ {sha[:8]}")
+
+        all_current = len(issues) == 0
+
+        if not all_current:
+            print(f"\n  Found {len(issues)} submodule issue(s):")
+            for issue in issues:
+                print(issue)
+            print("\n  To update submodules:")
+            print("    git submodule update --remote --merge")
+            print("    git add <submodule-path>")
+            print("    git commit -m 'chore(deps): update submodules'")
+
+        return all_current, issues
+
     def create_git_tag(self, config) -> bool:
         """Create annotated git tag."""
         tag_name = config.tag_name

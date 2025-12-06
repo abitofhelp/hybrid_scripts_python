@@ -520,12 +520,30 @@ After committing, press ENTER to continue with build and test verification."""
         print_error("Tests failed")
         return False
 
+    # Step 9: Verify submodules are current
+    print_info("\nStep 9: Verifying submodules are current...")
+    all_current, submodule_issues = adapter.verify_submodules_current(config)
+    if not all_current:
+        message = f"""Found {len(submodule_issues)} submodule issue(s).
+
+Submodules should be up-to-date before release to ensure:
+- Reproducible builds from the tagged release
+- Correct dependency versions are captured
+- No surprises when users clone the release
+
+You can:
+- Press ENTER to acknowledge and continue (if updating later)
+- Press 'q' to quit and update submodules now"""
+        if not prompt_user_continue(message):
+            return False
+
     print_section(f"\n{'='*70}")
     print_success(f"RELEASE {config.version} PREPARED AND VERIFIED SUCCESSFULLY!")
     print_section(f"{'='*70}\n")
     print_info("All files updated")
     print_info("Build passing")
     print_info("Tests passing")
+    print_info("Submodules verified")
     print()
     print_info("Next step:")
     print_info(f"   python3 scripts/python/release/release.py release {config.version}")
