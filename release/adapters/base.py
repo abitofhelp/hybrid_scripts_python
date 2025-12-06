@@ -941,6 +941,16 @@ class BaseReleaseAdapter(ABC):
         if has_bootstrap or has_cmd:
             return False
 
+        # Check GPR files for Library_Name or Library_Kind (Ada projects)
+        for gpr_file in project_root.glob("*.gpr"):
+            try:
+                content = gpr_file.read_text()
+                # Library_Name or Library_Kind in GPR indicates a library
+                if "Library_Name" in content or "Library_Kind" in content:
+                    return True
+            except Exception:
+                pass
+
         # Check project name as fallback
         project_name = project_root.name.lower()
         if "_lib_" in project_name or project_name.endswith("_lib"):
