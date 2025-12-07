@@ -274,8 +274,22 @@ class AdaAdapter(LanguageAdapter):
         return violations
 
     def _validate_file_naming(self, file_path: Path) -> List[ArchitectureViolation]:
-        """Validate file naming conventions for TOP-LEVEL packages only."""
+        """Validate file naming conventions for TOP-LEVEL packages only.
+
+        Recognizes GPR Naming package patterns:
+        - Double-underscore variants: package-name__variant.adb
+          These are alternate body files selected via GPR Naming package, e.g.:
+            for Body ("TZif.API") use "tzif-api__windows.adb";
+        """
         violations = []
+
+        # Skip files using GPR Naming package alternate body convention
+        # Pattern: package-name__variant.adb (double underscore indicates variant)
+        # These are valid GPR patterns for platform-specific alternate implementations
+        if '__' in file_path.stem:
+            # This is a GPR Naming package alternate body file
+            # The file is mapped to a package via the Naming package in .gpr files
+            return violations
 
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
