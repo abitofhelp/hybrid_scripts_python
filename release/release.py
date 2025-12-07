@@ -27,11 +27,14 @@
 # ==============================================================================
 
 import argparse
+import json
 import re
+import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 # Support both direct script execution and module import
 try:
@@ -321,6 +324,140 @@ def update_changelog(config) -> bool:
         return False
 
 
+def run_windows_validation(config) -> Tuple[bool, str]:
+    """
+    Trigger Windows CI workflow and wait for completion.
+
+    Uses GitHub CLI (gh) to trigger the workflow and monitor its status.
+
+    Args:
+        config: Release configuration
+
+    Returns:
+        Tuple of (success, message)
+    """
+    workflow_name = "windows-release.yml"
+
+    # Check if gh CLI is available
+    try:
+        result = subprocess.run(
+            ["gh", "--version"],
+            capture_output=True,
+            text=True,
+            cwd=config.project_root
+        )
+        if result.returncode != 0:
+            return False, "GitHub CLI (gh) not found. Install from https://cli.github.com/"
+    except FileNotFoundError:
+        return False, "GitHub CLI (gh) not found. Install from https://cli.github.com/"
+
+    # Check if workflow file exists
+    workflow_path = config.project_root / ".github" / "workflows" / workflow_name
+    if not workflow_path.exists():
+        return False, f"Workflow file not found: {workflow_path}"
+
+    # Get current git ref (branch or commit)
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        cwd=config.project_root
+    )
+    if result.returncode != 0:
+        return False, "Could not get current git commit"
+    current_ref = result.stdout.strip()
+
+    print_info(f"  Triggering Windows CI workflow...")
+    print_info(f"  Ref: {current_ref[:8]}")
+    print_info(f"  Version: {config.version}")
+
+    if config.dry_run:
+        print_info("  [DRY-RUN] Would trigger Windows workflow and wait for completion")
+        return True, "Dry run - skipped"
+
+    # Trigger the workflow
+    result = subprocess.run(
+        [
+            "gh", "workflow", "run", workflow_name,
+            "-f", f"version={config.version}",
+            "-f", f"ref={current_ref}"
+        ],
+        capture_output=True,
+        text=True,
+        cwd=config.project_root
+    )
+    if result.returncode != 0:
+        return False, f"Failed to trigger workflow: {result.stderr}"
+
+    print_info("  Workflow triggered. Waiting for run to start...")
+
+    # Wait a moment for the run to be created
+    time.sleep(3)
+
+    # Get the most recent run ID for this workflow
+    max_attempts = 10
+    run_id = None
+    for attempt in range(max_attempts):
+        result = subprocess.run(
+            [
+                "gh", "run", "list",
+                "--workflow", workflow_name,
+                "--limit", "1",
+                "--json", "databaseId,status,headSha"
+            ],
+            capture_output=True,
+            text=True,
+            cwd=config.project_root
+        )
+        if result.returncode == 0:
+            try:
+                runs = json.loads(result.stdout)
+                if runs and runs[0].get("headSha", "").startswith(current_ref[:7]):
+                    run_id = runs[0]["databaseId"]
+                    break
+            except json.JSONDecodeError:
+                pass
+        time.sleep(2)
+
+    if not run_id:
+        return False, "Could not find workflow run. Check GitHub Actions manually."
+
+    print_info(f"  Run ID: {run_id}")
+    print_info("  Waiting for workflow to complete (this may take several minutes)...")
+
+    # Watch the run until completion
+    result = subprocess.run(
+        ["gh", "run", "watch", str(run_id), "--exit-status"],
+        capture_output=True,
+        text=True,
+        cwd=config.project_root
+    )
+
+    if result.returncode == 0:
+        return True, "Windows validation passed"
+    else:
+        # Get more details about the failure
+        detail_result = subprocess.run(
+            ["gh", "run", "view", str(run_id), "--json", "conclusion,jobs"],
+            capture_output=True,
+            text=True,
+            cwd=config.project_root
+        )
+        details = ""
+        if detail_result.returncode == 0:
+            try:
+                run_info = json.loads(detail_result.stdout)
+                details = f"\nConclusion: {run_info.get('conclusion', 'unknown')}"
+                for job in run_info.get("jobs", []):
+                    if job.get("conclusion") != "success":
+                        details += f"\n  Failed job: {job.get('name')}"
+            except json.JSONDecodeError:
+                pass
+
+        view_url = f"{config.project_url}/actions/runs/{run_id}" if config.project_url else ""
+        return False, f"Windows validation failed.{details}\nView: {view_url}"
+
+
 def prepare_release(config, adapter) -> bool:
     """Prepare release by updating versions and running checks."""
     print_section(f"\n{'='*70}")
@@ -520,8 +657,23 @@ After committing, press ENTER to continue with build and test verification."""
         print_error("Tests failed")
         return False
 
-    # Step 9: Verify submodules are current
-    print_info("\nStep 9: Verifying submodules are current...")
+    # Step 9: Windows CI validation (pre-flight check)
+    workflow_path = config.project_root / ".github" / "workflows" / "windows-release.yml"
+    if workflow_path.exists() and not getattr(config, 'skip_windows', False):
+        print_info("\nStep 9: Running Windows CI validation (pre-flight)...")
+        success, message = run_windows_validation(config)
+        if not success:
+            print_error(f"Windows validation failed: {message}")
+            print_info("Use --skip-windows to bypass this check for local dev releases")
+            return False
+        print_success(f"  {message}")
+    elif getattr(config, 'skip_windows', False):
+        print_info("\nStep 9: Skipping Windows CI validation (--skip-windows)")
+    else:
+        print_info("\nStep 9: No Windows workflow found, skipping Windows validation")
+
+    # Step 10: Verify submodules are current
+    print_info("\nStep 10: Verifying submodules are current...")
     all_current, submodule_issues = adapter.verify_submodules_current(config)
     if not all_current:
         message = f"""Found {len(submodule_issues)} submodule issue(s).
@@ -542,7 +694,9 @@ You can:
     print_section(f"{'='*70}\n")
     print_info("All files updated")
     print_info("Build passing")
-    print_info("Tests passing")
+    print_info("Tests passing (macOS)")
+    if workflow_path.exists() and not getattr(config, 'skip_windows', False):
+        print_info("Tests passing (Windows CI)")
     print_info("Submodules verified")
     print()
     print_info("Next step:")
@@ -638,6 +792,12 @@ the appropriate release workflow.
         help='Show what would be done without making changes'
     )
 
+    parser.add_argument(
+        '--skip-windows',
+        action='store_true',
+        help='Skip Windows CI validation (for local-only dev releases)'
+    )
+
     args = parser.parse_args()
 
     # Validate version is provided for prepare/release
@@ -694,6 +854,7 @@ the appropriate release workflow.
     )
     config.project_name = project_name
     config.project_url = project_url
+    config.skip_windows = args.skip_windows
 
     print_info(f"Project: {project_name}")
     print_info(f"Language: {language.value}")
