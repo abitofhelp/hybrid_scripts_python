@@ -154,7 +154,7 @@ class AdaReleaseAdapter(BaseReleaseAdapter):
 
     def sync_versions(self, config) -> bool:
         """
-        Synchronize versions across all layer alire.toml files.
+        Synchronize versions across all layer alire.toml files and test crate.
 
         Args:
             config: ReleaseConfig instance
@@ -197,6 +197,23 @@ class AdaReleaseAdapter(BaseReleaseAdapter):
                     print(f"  Updated {rel_path}")
             except Exception as e:
                 print(f"  Warning: Could not update {toml_file}: {e}")
+
+        # Regenerate test config files by running alr build in test directory
+        # This updates test/config/* with the version from test/alire.toml
+        test_dir = config.project_root / 'test'
+        test_alire = test_dir / 'alire.toml'
+        if test_alire.exists():
+            print("  Regenerating test config files via alr build...")
+            result = self.run_command(
+                ['alr', 'build'],
+                test_dir,
+                capture_output=True,
+                check=False
+            )
+            if result is not None:
+                print(f"  Regenerated test/config/* from test/alire.toml")
+            else:
+                print(f"  Warning: Could not regenerate test config files (alr build failed)")
 
         return True
 

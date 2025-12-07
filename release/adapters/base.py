@@ -449,14 +449,12 @@ class BaseReleaseAdapter(ABC):
 
     def update_all_markdown_files(self, config) -> int:
         """Update version in all markdown files. Returns count of updated files."""
-        skip_files = {
-            "software_requirements_specification.md",
-            "software_design_specification.md",
-            "software_test_guide.md"
-        }
+        # Note: No files are skipped - all markdown files with version headers
+        # are updated, including formal docs (SRS, SDS, STG)
 
         all_md_files = []
-        for pattern in ["docs/**/*.md", "*.md"]:
+        # Include config/ directory for embedded restrictions README
+        for pattern in ["docs/**/*.md", "*.md", "config/*.md"]:
             for f in config.project_root.glob(pattern):
                 # Exclude docs/common submodule
                 if "/common/" not in str(f):
@@ -465,9 +463,6 @@ class BaseReleaseAdapter(ABC):
         updated_count = 0
 
         for md_file in all_md_files:
-            if md_file.name in skip_files:
-                continue
-
             try:
                 content = md_file.read_text(encoding='utf-8')
                 has_metadata = bool(re.search(
