@@ -307,7 +307,9 @@ class AdaReleaseAdapter(BaseReleaseAdapter):
 --    - Build metadata: +build.N, +commit.HASH
 --  =========================================================================
 
-package {ada_package}.Version is
+package {ada_package}.Version
+  with Preelaborate, SPARK_Mode => On
+is
 
    --  Semantic Version Components
    Major : constant Natural := {major};
@@ -501,7 +503,21 @@ end {ada_package}.Version;
             )
             if result is not None:
                 print("  Cleaned (via make)")
-                return True
+
+        # Reset Alire config files to development mode
+        # Release build creates config/ with release settings (-O3, etc.)
+        # We regenerate with development settings so git stays clean
+        alire_toml = config.project_root / 'alire.toml'
+        if alire_toml.exists():
+            print("  Resetting Alire config to development mode...")
+            result = self.run_command(
+                ['alr', 'build', '--stop-after=generation'],
+                config.project_root,
+                capture_output=True,
+                check=False
+            )
+            if result is not None:
+                print("  Alire config reset to development settings")
 
         print("  Cleaned")
         return True
