@@ -359,11 +359,98 @@ end {ada_package}.Version;
             print(f"  Version: {version_str}")
             print(f"  Generated: src/version/{project_name}-version.ads")
             print(f"  Package: {ada_package}.Version")
+
+            # Also update test_version.adb if it exists
+            self._update_test_version_file(config, ada_package, major, minor, patch, version_str)
+
             return True
 
         except Exception as e:
             print(f"  Error generating version file: {e}")
             return False
+
+    def _update_test_version_file(self, config, ada_package: str, major: str, minor: str, patch: str, version_str: str) -> bool:
+        """
+        Update test/unit/test_version.adb with new version values.
+
+        The test file contains hardcoded assertions like:
+          Assert (TZif.Version.Major = 2, "Major version is 2");
+          Assert (TZif.Version.Version = "2.0.0", "Version string is 2.0.0");
+
+        This method updates those values to match the new version.
+
+        Args:
+            config: ReleaseConfig instance
+            ada_package: Ada package name (e.g., "TZif")
+            major, minor, patch: Version components
+            version_str: Full version string
+
+        Returns:
+            True if successful or file doesn't exist
+        """
+        test_file = config.project_root / 'test' / 'unit' / 'test_version.adb'
+        if not test_file.exists():
+            return True  # Not an error if test file doesn't exist
+
+        try:
+            content = test_file.read_text(encoding='utf-8')
+            original_content = content
+
+            # Update Major version assertion
+            # Pattern: Assert (Package.Version.Major = N, "Major version is N");
+            content = re.sub(
+                r'(Assert\s*\(\s*\w+\.Version\.Major\s*=\s*)\d+(\s*,\s*"Major version is )\d+(")',
+                rf'\g<1>{major}\g<2>{major}\g<3>',
+                content
+            )
+
+            # Update Minor version assertion
+            content = re.sub(
+                r'(Assert\s*\(\s*\w+\.Version\.Minor\s*=\s*)\d+(\s*,\s*"Minor version is )\d+(")',
+                rf'\g<1>{minor}\g<2>{minor}\g<3>',
+                content
+            )
+
+            # Update Patch version assertion
+            content = re.sub(
+                r'(Assert\s*\(\s*\w+\.Version\.Patch\s*=\s*)\d+(\s*,\s*"Patch version is )\d+(")',
+                rf'\g<1>{patch}\g<2>{patch}\g<3>',
+                content
+            )
+
+            # Update Version string assertion
+            # Pattern: Assert (Package.Version.Version = "X.Y.Z", "Version string is X.Y.Z");
+            content = re.sub(
+                r'(Assert\s*\(\s*\w+\.Version\.Version\s*=\s*")[^"]+("\s*,\s*"Version string is )[^"]+(")',
+                rf'\g<1>{version_str}\g<2>{version_str}\g<3>',
+                content
+            )
+
+            # Update version references in comments (e.g., "For current X.Y.Z release")
+            content = re.sub(
+                r'(--\s*For current )\d+\.\d+\.\d+( release)',
+                rf'\g<1>{version_str}\g<2>',
+                content
+            )
+
+            # Update version references in test messages (e.g., "Version X.Y.Z is stable")
+            content = re.sub(
+                r'("Version )\d+\.\d+\.\d+( is )',
+                rf'\g<1>{version_str}\g<2>',
+                content
+            )
+
+            if content != original_content:
+                test_file.write_text(content, encoding='utf-8')
+                print(f"  Updated: test/unit/test_version.adb")
+            else:
+                print(f"  Test file unchanged")
+
+            return True
+
+        except Exception as e:
+            print(f"  Warning: Could not update test_version.adb: {e}")
+            return True  # Non-fatal
 
     def run_build(self, config) -> bool:
         """
