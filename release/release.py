@@ -658,11 +658,13 @@ After committing, press ENTER to continue with build and test verification."""
         return False
 
     # Step 8.5: SPARK check (Ada libraries only - fast gate)
-    if hasattr(adapter, 'run_spark_check'):
+    if hasattr(adapter, 'run_spark_check') and not getattr(config, 'skip_spark', False):
         print_info("\nStep 8.5: Running SPARK legality check...")
         if not adapter.run_spark_check(config):
             print_error("SPARK check failed")
             return False
+    elif getattr(config, 'skip_spark', False):
+        print_info("\nStep 8.5: Skipping SPARK check (--skip-spark)")
 
     # Step 9: Windows CI validation (pre-flight check)
     workflow_path = config.project_root / ".github" / "workflows" / "windows-release.yml"
@@ -749,12 +751,14 @@ def create_release(config, adapter) -> bool:
 
     # SPARK PROVE (Ada libraries only - post-release verification)
     spark_summary = None
-    if hasattr(adapter, 'run_spark_prove'):
+    if hasattr(adapter, 'run_spark_prove') and not getattr(config, 'skip_spark', False):
         print_info("\nRunning SPARK PROVE formal verification...")
         print_info("(This may take several minutes - go have lunch!)")
         success, spark_summary = adapter.run_spark_prove(config)
         if success and spark_summary and hasattr(adapter, 'update_github_release_with_spark'):
             adapter.update_github_release_with_spark(config, spark_summary)
+    elif getattr(config, 'skip_spark', False):
+        print_info("\nSkipping SPARK PROVE (--skip-spark)")
 
     print_section(f"\n{'='*70}")
     print_success(f"RELEASE {config.version} CREATED SUCCESSFULLY!")
@@ -816,6 +820,12 @@ the appropriate release workflow.
         help='Skip Windows CI validation (for local-only dev releases)'
     )
 
+    parser.add_argument(
+        '--skip-spark',
+        action='store_true',
+        help='Skip SPARK verification (for apps or quick dev releases)'
+    )
+
     args = parser.parse_args()
 
     # Validate version is provided for prepare/release
@@ -873,6 +883,7 @@ the appropriate release workflow.
     config.project_name = project_name
     config.project_url = project_url
     config.skip_windows = args.skip_windows
+    config.skip_spark = args.skip_spark
 
     print_info(f"Project: {project_name}")
     print_info(f"Language: {language.value}")
