@@ -658,6 +658,11 @@ After committing, press ENTER to continue with build and test verification."""
         print_error("Tests failed")
         return False
 
+    # Step 8a: Update test counts in docs (Ada only)
+    if hasattr(adapter, 'update_test_counts_in_docs'):
+        print_info("\nStep 8a: Updating test counts in docs...")
+        adapter.update_test_counts_in_docs(config)
+
     # Step 8.5: SPARK check (Ada libraries only - fast gate)
     if hasattr(adapter, 'run_spark_check') and not getattr(config, 'skip_spark', False):
         print_info("\nStep 8.5: Running SPARK legality check...")

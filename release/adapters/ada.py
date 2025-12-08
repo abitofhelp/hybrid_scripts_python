@@ -491,15 +491,21 @@ end {ada_package}.Version;
 
     def run_tests(self, config) -> bool:
         """
-        Run Ada tests.
+        Run Ada tests and extract test counts.
 
         Args:
             config: ReleaseConfig instance
 
         Returns:
             True if tests pass
+
+        Side effects:
+            Sets config.test_counts dict with unit, integration, examples counts
         """
         print("Running Ada tests...")
+
+        # Initialize test counts
+        config.test_counts = {'unit': 0, 'integration': 0, 'examples': 0}
 
         # Try make test-all (comprehensive test target)
         makefile = config.project_root / 'Makefile'
@@ -511,7 +517,13 @@ end {ada_package}.Version;
                 capture_output=True
             )
             if result is not None:
-                print("  All tests passed (via make test-all)")
+                # Parse test counts from output
+                self._parse_test_counts(result, config)
+                total = sum(config.test_counts.values())
+                print(f"  All tests passed (via make test-all)")
+                print(f"  Test counts: {config.test_counts['unit']} unit, "
+                      f"{config.test_counts['integration']} integration, "
+                      f"{config.test_counts['examples']} examples = {total} total")
                 return True
 
             # Fallback to test target
@@ -521,12 +533,121 @@ end {ada_package}.Version;
                 capture_output=True
             )
             if result is not None:
+                self._parse_test_counts(result, config)
                 print("  All tests passed (via make test)")
                 return True
 
         # No standard fallback for Ada - make test is the convention
         print("  No test target found")
         return True  # Not fatal
+
+    def _parse_test_counts(self, output: str, config) -> None:
+        """
+        Parse test counts from make test-all output.
+
+        Looks for patterns like:
+            GRAND TOTAL - ALL UNIT TESTS
+            Total tests:   425
+
+            GRAND TOTAL - ALL INTEGRATION TESTS
+            Total tests:   131
+
+            GRAND TOTAL - ALL EXAMPLE TESTS
+            Total tests:   11
+
+        Args:
+            output: Test runner output
+            config: ReleaseConfig to store counts on
+        """
+        import re
+
+        # Pattern to find test totals by section
+        # Look for "GRAND TOTAL - ALL X TESTS" followed by "Total tests: N"
+        patterns = [
+            (r'GRAND TOTAL - ALL UNIT TESTS.*?Total tests:\s*(\d+)', 'unit'),
+            (r'GRAND TOTAL - ALL INTEGRATION TESTS.*?Total tests:\s*(\d+)', 'integration'),
+            (r'GRAND TOTAL - ALL EXAMPLE TESTS.*?Total tests:\s*(\d+)', 'examples'),
+        ]
+
+        for pattern, key in patterns:
+            match = re.search(pattern, output, re.DOTALL | re.IGNORECASE)
+            if match:
+                config.test_counts[key] = int(match.group(1))
+
+    def update_test_counts_in_docs(self, config) -> bool:
+        """
+        Update test counts in CHANGELOG and README after tests pass.
+
+        Args:
+            config: ReleaseConfig instance with test_counts populated
+
+        Returns:
+            True if successful
+        """
+        import re
+
+        if not hasattr(config, 'test_counts'):
+            print("  No test counts available, skipping doc update")
+            return True
+
+        counts = config.test_counts
+        total = sum(counts.values())
+
+        if total == 0:
+            print("  No test counts parsed, skipping doc update")
+            return True
+
+        print(f"Updating test counts in docs ({total} total tests)...")
+
+        # Update README.md test results line
+        readme_file = config.project_root / 'README.md'
+        if readme_file.exists():
+            content = readme_file.read_text(encoding='utf-8')
+            # Pattern: **Test Results:** X unit + Y integration + Z examples = **N tests passing**
+            old_pattern = r'\*\*Test Results:\*\*\s*\d+\s*unit\s*\+\s*\d+\s*integration\s*\+\s*\d+\s*examples\s*=\s*\*\*\d+\s*tests passing\*\*'
+            new_text = f"**Test Results:** {counts['unit']} unit + {counts['integration']} integration + {counts['examples']} examples = **{total} tests passing**"
+
+            if re.search(old_pattern, content):
+                content = re.sub(old_pattern, new_text, content)
+                if not config.dry_run:
+                    readme_file.write_text(content, encoding='utf-8')
+                print(f"  Updated README.md test results")
+            else:
+                print(f"  README.md test results line not found (pattern may differ)")
+
+        # Update CHANGELOG.md - find the current version section and add/update test counts
+        changelog_file = config.project_root / 'CHANGELOG.md'
+        if changelog_file.exists():
+            content = changelog_file.read_text(encoding='utf-8')
+
+            # Look for test count line in current version section
+            # Pattern: **Test Coverage:** X unit + Y integration + Z examples = N total
+            old_coverage_pattern = r'\*\*Test Coverage:\*\*\s*\d+\s*unit.*?=\s*\d+\s*total'
+            new_coverage = f"**Test Coverage:** {counts['unit']} unit + {counts['integration']} integration + {counts['examples']} examples = {total} total"
+
+            if re.search(old_coverage_pattern, content):
+                content = re.sub(old_coverage_pattern, new_coverage, content)
+                if not config.dry_run:
+                    changelog_file.write_text(content, encoding='utf-8')
+                print(f"  Updated CHANGELOG.md test coverage")
+            else:
+                # Try to add test coverage to current version section
+                version_section_pattern = rf'(## \[{re.escape(config.version)}\][^\n]*\n)'
+                match = re.search(version_section_pattern, content)
+                if match:
+                    # Add test coverage after the version header
+                    insert_pos = match.end()
+                    # Check if there's already content or just blank
+                    next_content = content[insert_pos:insert_pos+100]
+                    if not next_content.strip().startswith('**Test Coverage:**'):
+                        content = content[:insert_pos] + f"\n{new_coverage}\n" + content[insert_pos:]
+                        if not config.dry_run:
+                            changelog_file.write_text(content, encoding='utf-8')
+                        print(f"  Added test coverage to CHANGELOG.md")
+                else:
+                    print(f"  CHANGELOG.md version section not found")
+
+        return True
 
     def run_format(self, config) -> bool:
         """
