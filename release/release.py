@@ -624,11 +624,30 @@ If CHANGELOG is already correct, just press ENTER to continue."""
     if not update_changelog(config):
         return False
 
-    # Checkpoint: Review and commit changes
+    # Step 7: Build verification (before commit - verify code compiles)
+    print_info("\nStep 7: Running build...")
+    if not adapter.run_build(config):
+        print_error("Build failed")
+        return False
+
+    # Step 8: Test verification (before commit - verify tests pass and capture counts)
+    print_info("\nStep 8: Running tests...")
+    if not adapter.run_tests(config):
+        print_error("Tests failed")
+        return False
+
+    # Step 8a: Update test counts in docs (Ada only - before commit)
+    if hasattr(adapter, 'update_test_counts_in_docs'):
+        print_info("\nStep 8a: Updating test counts in docs...")
+        adapter.update_test_counts_in_docs(config)
+
+    # Checkpoint: Review and commit changes (now includes test counts)
     message = f"""All files have been updated for release {config.version}
 >>>> DO NOT STAGE FOR COMMIT: /config/*_config.gpr, /config/*_config.h, /config/*_config.ads <<<<
 
-IMPORTANT: Review and commit changes NOW (before build/test):
+Build and tests have passed. Test counts have been added to docs.
+
+IMPORTANT: Review and commit changes NOW:
 
 1. Review what changed:
    git diff
@@ -637,45 +656,23 @@ IMPORTANT: Review and commit changes NOW (before build/test):
    git add -A
    git commit -m "chore: Prepare release {config.version}"
 
-WHY COMMIT NOW?
-- If build/tests fail, you can easily rollback (git reset HEAD~1)
-- Clean separation between preparation and verification
-- Safe fallback position
-
-After committing, press ENTER to continue with build and test verification."""
+After committing, press ENTER to continue with additional verification."""
     if not prompt_user_continue(message):
         return False
 
-    # Step 7: Build verification
-    print_info("\nStep 7: Running build...")
-    if not adapter.run_build(config):
-        print_error("Build failed")
-        return False
-
-    # Step 8: Test verification
-    print_info("\nStep 8: Running tests...")
-    if not adapter.run_tests(config):
-        print_error("Tests failed")
-        return False
-
-    # Step 8a: Update test counts in docs (Ada only)
-    if hasattr(adapter, 'update_test_counts_in_docs'):
-        print_info("\nStep 8a: Updating test counts in docs...")
-        adapter.update_test_counts_in_docs(config)
-
-    # Step 8.5: SPARK check (Ada libraries only - fast gate)
+    # Step 9: SPARK check (Ada libraries only - fast gate)
     if hasattr(adapter, 'run_spark_check') and not getattr(config, 'skip_spark', False):
-        print_info("\nStep 8.5: Running SPARK legality check...")
+        print_info("\nStep 9: Running SPARK legality check...")
         if not adapter.run_spark_check(config):
             print_error("SPARK check failed")
             return False
     elif getattr(config, 'skip_spark', False):
-        print_info("\nStep 8.5: Skipping SPARK check (--skip-spark)")
+        print_info("\nStep 9: Skipping SPARK check (--skip-spark)")
 
-    # Step 9: Windows CI validation (pre-flight check)
+    # Step 10: Windows CI validation (pre-flight check)
     workflow_path = config.project_root / ".github" / "workflows" / "windows-release.yml"
     if workflow_path.exists() and not getattr(config, 'skip_windows', False):
-        print_info("\nStep 9: Running Windows CI validation (pre-flight)...")
+        print_info("\nStep 10: Running Windows CI validation (pre-flight)...")
         success, message = run_windows_validation(config)
         if not success:
             print_error(f"Windows validation failed: {message}")
@@ -683,12 +680,12 @@ After committing, press ENTER to continue with build and test verification."""
             return False
         print_success(f"  {message}")
     elif getattr(config, 'skip_windows', False):
-        print_info("\nStep 9: Skipping Windows CI validation (--skip-windows)")
+        print_info("\nStep 10: Skipping Windows CI validation (--skip-windows)")
     else:
-        print_info("\nStep 9: No Windows workflow found, skipping Windows validation")
+        print_info("\nStep 10: No Windows workflow found, skipping Windows validation")
 
-    # Step 10: Verify submodules are current
-    print_info("\nStep 10: Verifying submodules are current...")
+    # Step 11: Verify submodules are current
+    print_info("\nStep 11: Verifying submodules are current...")
     all_current, submodule_issues = adapter.verify_submodules_current(config)
     if not all_current:
         message = f"""Found {len(submodule_issues)} submodule issue(s).
