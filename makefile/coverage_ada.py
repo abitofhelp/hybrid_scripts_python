@@ -48,6 +48,12 @@ class Config:
         self.report_dir = self.coverage_dir / "report"
         self.gnatcov_rts_prefix = root / "external" / "gnatcov_rts" / "install"
 
+        # Exclude patterns for platform-specific code not testable on desktop
+        self.exclude_patterns = [
+            "*-embedded*",     # Embedded I/O adapter (requires bare-metal target)
+            "*-windows*",      # Windows adapter (requires Windows)
+        ]
+
 
 # =============================================================================
 # Utilities
@@ -302,6 +308,16 @@ def run_tests(cfg: Config, run_unit: bool, run_integration: bool) -> bool:
 # Step 5: Generate Reports
 # =============================================================================
 
+def should_exclude(filepath: Path, patterns: list[str]) -> bool:
+    """Check if a filepath matches any exclusion pattern."""
+    import fnmatch
+    name = filepath.name.lower()
+    for pattern in patterns:
+        if fnmatch.fnmatch(name, pattern.lower()):
+            return True
+    return False
+
+
 def generate_reports(cfg: Config) -> bool:
     """Generate coverage reports from trace files."""
     print("\n" + "=" * 70)
@@ -310,9 +326,12 @@ def generate_reports(cfg: Config) -> bool:
 
     cfg.report_dir.mkdir(parents=True, exist_ok=True)
 
-    # Collect SID files
+    # Collect SID files, excluding platform-specific code
     sid_list = cfg.coverage_dir / "sid.list"
-    sid_files = list(cfg.root.glob("obj/**/*.sid"))
+    all_sid_files = list(cfg.root.glob("obj/**/*.sid"))
+    sid_files = [f for f in all_sid_files if not should_exclude(f, cfg.exclude_patterns)]
+    excluded_count = len(all_sid_files) - len(sid_files)
+
     if not sid_files:
         print("✗ No SID files found")
         return False
@@ -321,6 +340,8 @@ def generate_reports(cfg: Config) -> bool:
         for sid in sid_files:
             f.write(f"{sid}\n")
     print(f"  Found {len(sid_files)} SID file(s)")
+    if excluded_count > 0:
+        print(f"  Excluded {excluded_count} platform-specific file(s)")
 
     # Collect trace files
     trace_list = cfg.coverage_dir / "traces.list"
