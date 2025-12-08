@@ -626,6 +626,7 @@ If CHANGELOG is already correct, just press ENTER to continue."""
 
     # Checkpoint: Review and commit changes
     message = f"""All files have been updated for release {config.version}
+>>>> DO NOT STAGE FOR COMMIT: /config/*_config.gpr, /config/*_config.h, /config/*_config.ads <<<<
 
 IMPORTANT: Review and commit changes NOW (before build/test):
 
