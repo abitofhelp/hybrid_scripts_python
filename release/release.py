@@ -752,6 +752,21 @@ def create_release(config, adapter) -> bool:
     if not adapter.create_github_release(config):
         return False
 
+    # Alire index reminder (Ada projects)
+    if config.language == 'ada':
+        print_info("\n" + "="*60)
+        print_info("ALIRE PUBLISH REMINDER")
+        print_info("="*60)
+        print_info("Before running 'alr publish', update your local Alire index")
+        print_info("to access any new dependency releases:")
+        print_info("")
+        print_info("  # Update local Alire index cache")
+        print_info("  alr index --update-all")
+        print_info("")
+        print_info("  # Verify dependency is visible (example)")
+        print_info("  alr search <crate>=<version>")
+        print_info("="*60 + "\n")
+
     # SPARK PROVE (Ada libraries only - post-release verification)
     spark_summary = None
     if hasattr(adapter, 'run_spark_prove') and not getattr(config, 'skip_spark', False):
