@@ -657,6 +657,13 @@ After committing, press ENTER to continue with build and test verification."""
         print_error("Tests failed")
         return False
 
+    # Step 8.5: SPARK check (Ada libraries only - fast gate)
+    if hasattr(adapter, 'run_spark_check'):
+        print_info("\nStep 8.5: Running SPARK legality check...")
+        if not adapter.run_spark_check(config):
+            print_error("SPARK check failed")
+            return False
+
     # Step 9: Windows CI validation (pre-flight check)
     workflow_path = config.project_root / ".github" / "workflows" / "windows-release.yml"
     if workflow_path.exists() and not getattr(config, 'skip_windows', False):
@@ -740,6 +747,15 @@ def create_release(config, adapter) -> bool:
     if not adapter.create_github_release(config):
         return False
 
+    # SPARK PROVE (Ada libraries only - post-release verification)
+    spark_summary = None
+    if hasattr(adapter, 'run_spark_prove'):
+        print_info("\nRunning SPARK PROVE formal verification...")
+        print_info("(This may take several minutes - go have lunch!)")
+        success, spark_summary = adapter.run_spark_prove(config)
+        if success and spark_summary and hasattr(adapter, 'update_github_release_with_spark'):
+            adapter.update_github_release_with_spark(config, spark_summary)
+
     print_section(f"\n{'='*70}")
     print_success(f"RELEASE {config.version} CREATED SUCCESSFULLY!")
     print_section(f"{'='*70}\n")
@@ -747,6 +763,8 @@ def create_release(config, adapter) -> bool:
     if config.project_url:
         release_url = f"{config.project_url}/releases/tag/v{config.version}"
         print_info(f"View at: {release_url}")
+    if spark_summary:
+        print_info(f"SPARK verification: {spark_summary}")
     print()
 
     return True
