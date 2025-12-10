@@ -701,6 +701,27 @@ You can:
         if not prompt_user_continue(message):
             return False
 
+    # Step 12: Reset config files to development mode (cleanup)
+    # This ensures working tree is clean for 'release release' command
+    print_info("\nStep 12: Resetting config files to development mode...")
+    if hasattr(adapter, 'reset_config_to_development'):
+        if adapter.reset_config_to_development(config):
+            print_success("  Config files reset to development mode")
+        else:
+            print_warning("  Could not reset config files (manual cleanup may be needed)")
+    else:
+        # Fallback: use git checkout for config directory
+        result = subprocess.run(
+            ["git", "checkout", "config/"],
+            capture_output=True,
+            text=True,
+            cwd=config.project_root
+        )
+        if result.returncode == 0:
+            print_success("  Config files restored via git checkout")
+        else:
+            print_warning("  Could not reset config files (manual cleanup may be needed)")
+
     print_section(f"\n{'='*70}")
     print_success(f"RELEASE {config.version} PREPARED AND VERIFIED SUCCESSFULLY!")
     print_section(f"{'='*70}\n")

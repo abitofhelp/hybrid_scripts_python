@@ -802,7 +802,7 @@ end {ada_package}.Version;
                     cwd=config.project_root,
                     capture_output=True,
                     text=True,
-                    timeout=1800  # 30 minute timeout
+                    timeout=5400  # 90 minute timeout (SPARK prove can take 45-90 min)
                 )
 
                 output = result.stdout + result.stderr
