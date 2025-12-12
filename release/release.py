@@ -574,10 +574,11 @@ You can:
             return False
 
     # Step 0h: Validate exception handling boundaries (Ada only)
-    print_info("\nStep 0h: Validating exception handling boundaries...")
-    is_valid, violations = adapter.validate_exception_boundaries(config)
-    if not is_valid:
-        message = f"""Found {len(violations)} exception boundary violation(s).
+    if 'exceptions' not in getattr(config, 'skip_stages', set()):
+        print_info("\nStep 0h: Validating exception handling boundaries...")
+        is_valid, violations = adapter.validate_exception_boundaries(config)
+        if not is_valid:
+            message = f"""Found {len(violations)} exception boundary violation(s).
 
 Architecture Rules (per SDS):
 - Infrastructure/Presentation: MUST use Functional.Try.Try_To_Result
@@ -588,8 +589,10 @@ These violations MUST be fixed before release.
 See SDS Section 6.3 (lib) or 4.7 (app) for details.
 
 Press 'q' to quit and fix the violations."""
-        if not prompt_user_continue(message):
-            return False
+            if not prompt_user_continue(message):
+                return False
+    else:
+        print_info("\nStep 0h: Skipping exception boundary validation (--skip=exceptions)")
 
     # Step 1: Clean up temporary files
     print_info("\nStep 1: Cleaning up temporary files...")
@@ -679,26 +682,27 @@ After committing, press ENTER to continue with additional verification."""
         return False
 
     # Step 9: SPARK check (Ada libraries only - fast gate)
-    if hasattr(adapter, 'run_spark_check') and not getattr(config, 'skip_spark', False):
+    skip_stages = getattr(config, 'skip_stages', set())
+    if hasattr(adapter, 'run_spark_check') and 'spark' not in skip_stages:
         print_info("\nStep 9: Running SPARK legality check...")
         if not adapter.run_spark_check(config):
             print_error("SPARK check failed")
             return False
-    elif getattr(config, 'skip_spark', False):
-        print_info("\nStep 9: Skipping SPARK check (--skip-spark)")
+    elif 'spark' in skip_stages:
+        print_info("\nStep 9: Skipping SPARK check (--skip=spark)")
 
     # Step 10: Windows CI validation (pre-flight check)
     workflow_path = config.project_root / ".github" / "workflows" / "windows-release.yml"
-    if workflow_path.exists() and not getattr(config, 'skip_windows', False):
+    if workflow_path.exists() and 'windows' not in skip_stages:
         print_info("\nStep 10: Running Windows CI validation (pre-flight)...")
         success, message = run_windows_validation(config)
         if not success:
             print_error(f"Windows validation failed: {message}")
-            print_info("Use --skip-windows to bypass this check for local dev releases")
+            print_info("Use --skip=windows to bypass this check for local dev releases")
             return False
         print_success(f"  {message}")
-    elif getattr(config, 'skip_windows', False):
-        print_info("\nStep 10: Skipping Windows CI validation (--skip-windows)")
+    elif 'windows' in skip_stages:
+        print_info("\nStep 10: Skipping Windows CI validation (--skip=windows)")
     else:
         print_info("\nStep 10: No Windows workflow found, skipping Windows validation")
 
@@ -746,7 +750,7 @@ You can:
     print_info("All files updated")
     print_info("Build passing")
     print_info("Tests passing (macOS)")
-    if workflow_path.exists() and not getattr(config, 'skip_windows', False):
+    if workflow_path.exists() and 'windows' not in skip_stages:
         print_info("Tests passing (Windows CI)")
     print_info("Submodules verified")
     print()
@@ -808,14 +812,15 @@ def create_release(config, adapter) -> bool:
 
     # SPARK PROVE (Ada libraries only - post-release verification)
     spark_summary = None
-    if hasattr(adapter, 'run_spark_prove') and not getattr(config, 'skip_spark', False):
+    skip_stages = getattr(config, 'skip_stages', set())
+    if hasattr(adapter, 'run_spark_prove') and 'spark' not in skip_stages:
         print_info("\nRunning SPARK PROVE formal verification...")
         print_info("(This may take several minutes - go have lunch!)")
         success, spark_summary = adapter.run_spark_prove(config)
         if success and spark_summary and hasattr(adapter, 'update_github_release_with_spark'):
             adapter.update_github_release_with_spark(config, spark_summary)
-    elif getattr(config, 'skip_spark', False):
-        print_info("\nSkipping SPARK PROVE (--skip-spark)")
+    elif 'spark' in skip_stages:
+        print_info("\nSkipping SPARK PROVE (--skip=spark)")
 
     print_section(f"\n{'='*70}")
     print_success(f"RELEASE {config.version} CREATED SUCCESSFULLY!")
@@ -838,8 +843,13 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s prepare 1.0.0     Prepare release (update files, build, test)
-  %(prog)s release 1.0.0     Create release (tag, push, GitHub release)
+  %(prog)s prepare 1.0.0                Prepare release (all stages)
+  %(prog)s prepare 1.0.0 --skip=spark   Skip SPARK verification
+  %(prog)s prepare 1.0.0 --skip=windows,spark
+                                        Skip multiple stages
+  %(prog)s release 1.0.0                Create release (tag, push, GitHub)
+
+Skippable stages: windows, spark, exceptions, all
 
 The script auto-detects the project language (Go/Ada) and applies
 the appropriate release workflow.
@@ -871,19 +881,38 @@ the appropriate release workflow.
         help='Show what would be done without making changes'
     )
 
-    parser.add_argument(
-        '--skip-windows',
-        action='store_true',
-        help='Skip Windows CI validation (for local-only dev releases)'
-    )
+    # Define skippable stages with their descriptions
+    skippable_stages = {
+        'windows': 'Windows CI validation',
+        'spark': 'SPARK verification',
+        'exceptions': 'Exception boundary validation',
+    }
+    stage_list = ', '.join(skippable_stages.keys())
 
     parser.add_argument(
-        '--skip-spark',
-        action='store_true',
-        help='Skip SPARK verification (for apps or quick dev releases)'
+        '--skip',
+        type=str,
+        default='',
+        metavar='STAGES',
+        help=f'Skip specific stages (comma-separated). Available: {stage_list}, all'
     )
 
     args = parser.parse_args()
+
+    # Parse --skip into a set of stages
+    if args.skip:
+        if args.skip.lower() == 'all':
+            args.skip_stages = set(skippable_stages.keys())
+        else:
+            args.skip_stages = set(s.strip().lower() for s in args.skip.split(','))
+            # Validate stage names
+            invalid = args.skip_stages - set(skippable_stages.keys())
+            if invalid:
+                print_error(f"Unknown skip stage(s): {', '.join(invalid)}")
+                print_info(f"Available stages: {stage_list}, all")
+                return 1
+    else:
+        args.skip_stages = set()
 
     # Validate version is provided for prepare/release
     if args.action in ['prepare', 'release', 'validate'] and not args.version:
@@ -939,12 +968,13 @@ the appropriate release workflow.
     )
     config.project_name = project_name
     config.project_url = project_url
-    config.skip_windows = args.skip_windows
-    config.skip_spark = args.skip_spark
+    config.skip_stages = args.skip_stages
 
     print_info(f"Project: {project_name}")
     print_info(f"Language: {language.value}")
     print_info(f"Root: {project_root}")
+    if args.skip_stages:
+        print_info(f"Skipping: {', '.join(sorted(args.skip_stages))}")
 
     try:
         if args.action == 'prepare':
