@@ -1674,6 +1674,13 @@ class BaseReleaseAdapter(ABC):
             r'with\s+Functional\.Try\s*;', re.IGNORECASE
         )
 
+        # Pattern to detect DESIGN DECISION or DELIBERATE comments that
+        # indicate an intentional exception handler (e.g., for Preelaborate
+        # packages that cannot use Functional.Try)
+        design_decision_pattern = re.compile(
+            r'--\s*(DESIGN DECISION|DELIBERATE)', re.IGNORECASE
+        )
+
         # Collect all .adb source files in src/
         src_dir = config.project_root / 'src'
         if not src_dir.exists():
@@ -1724,7 +1731,7 @@ class BaseReleaseAdapter(ABC):
                 if allows_manual_exception:
                     continue
 
-                # Check for exception keyword (excluding comments)
+                # Check for exception keyword (excluding comments and design decisions)
                 lines = content.split('\n')
                 has_exception_keyword = False
                 exception_line_num = 0
@@ -1739,6 +1746,15 @@ class BaseReleaseAdapter(ABC):
                         line = line[:line.index('--')]
                     # Check for exception keyword
                     if exception_keyword_pattern.search(line):
+                        # Check if there's a DESIGN DECISION comment in
+                        # the next 5 lines (covers 'when others =>' plus comment)
+                        has_design_decision = False
+                        for j in range(i, min(i + 6, len(lines) + 1)):
+                            if j <= len(lines) and design_decision_pattern.search(lines[j - 1]):
+                                has_design_decision = True
+                                break
+                        if has_design_decision:
+                            continue  # Skip this exception - it's documented as intentional
                         has_exception_keyword = True
                         exception_line_num = i
                         break
