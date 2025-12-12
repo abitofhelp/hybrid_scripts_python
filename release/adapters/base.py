@@ -1615,3 +1615,167 @@ class BaseReleaseAdapter(ABC):
                 print(finding)
 
         return is_clean, findings
+
+    def validate_exception_boundaries(self, config) -> Tuple[bool, List[str]]:
+        """
+        Validate exception handling follows architectural rules.
+
+        Architecture Rules (per SDS Section 6.3/4.7):
+        - Infrastructure/Presentation: MUST use Functional.Try, NO manual exception handlers
+        - Domain/Application/API: NO exception keyword allowed (Result types only)
+        - Bootstrap/Main/Test: exception handlers ALLOWED
+
+        This validation is Ada-specific. Go projects do not have exceptions.
+
+        Args:
+            config: ReleaseConfig instance
+
+        Returns:
+            Tuple of (is_valid, list_of_violations)
+            is_valid: True if no violations found
+            violations: List of file:line details with violations
+        """
+        # Only validate Ada projects
+        if hasattr(config, 'language') and config.language != Language.ADA:
+            print("  ℹ Skipping exception boundary check (Go projects don't have exceptions)")
+            return True, []
+
+        # Check if this is an Ada project
+        if not (config.project_root / 'alire.toml').exists():
+            print("  ℹ Skipping exception boundary check (not an Ada project)")
+            return True, []
+
+        print("Validating exception handling boundaries...")
+        violations = []
+
+        # Layer definitions with their rules
+        # Format: (path_pattern, layer_name, requires_functional_try, allows_manual_exception)
+        layer_rules = [
+            ('src/infrastructure/', 'Infrastructure', True, False),
+            ('src/presentation/', 'Presentation', True, False),
+            ('src/domain/', 'Domain', False, False),
+            ('src/application/', 'Application', False, False),
+            ('src/api/', 'API', False, False),
+            # Bootstrap and Main are allowed to have exceptions
+            ('src/bootstrap/', 'Bootstrap', False, True),
+        ]
+
+        # Main entry points that are allowed to have exceptions
+        main_patterns = ['main.adb', 'greeter.adb']
+
+        # Test files are exempt
+        exempt_dirs = ['test/', 'tests/', 'examples/']
+
+        # Pattern to detect exception block start
+        exception_keyword_pattern = re.compile(r'\bexception\b', re.IGNORECASE)
+
+        # Pattern to detect Functional.Try usage
+        functional_try_pattern = re.compile(
+            r'with\s+Functional\.Try\s*;', re.IGNORECASE
+        )
+
+        # Collect all .adb source files in src/
+        src_dir = config.project_root / 'src'
+        if not src_dir.exists():
+            print("  ℹ No src/ directory found, skipping exception boundary check")
+            return True, []
+
+        all_adb_files = list(src_dir.glob('**/*.adb'))
+
+        # Filter exempt files
+        def is_exempt(file_path: Path) -> bool:
+            rel_path = str(file_path.relative_to(config.project_root))
+            # Check exempt directories
+            for exempt_dir in exempt_dirs:
+                if rel_path.startswith(exempt_dir):
+                    return True
+            # Check main entry points
+            if file_path.name in main_patterns:
+                return True
+            return False
+
+        all_adb_files = [f for f in all_adb_files if not is_exempt(f)]
+
+        print(f"  Scanning {len(all_adb_files)} Ada source files...")
+
+        for file_path in all_adb_files:
+            try:
+                content = file_path.read_text(encoding='utf-8')
+                rel_path = file_path.relative_to(config.project_root)
+                rel_path_str = str(rel_path)
+
+                # Determine which layer this file belongs to
+                layer_name = None
+                requires_functional_try = False
+                allows_manual_exception = False
+
+                for path_prefix, name, requires_try, allows_exc in layer_rules:
+                    if rel_path_str.startswith(path_prefix):
+                        layer_name = name
+                        requires_functional_try = requires_try
+                        allows_manual_exception = allows_exc
+                        break
+
+                # Skip files not in a known layer
+                if layer_name is None:
+                    continue
+
+                # Skip Bootstrap (allowed to have exceptions)
+                if allows_manual_exception:
+                    continue
+
+                # Check for exception keyword (excluding comments)
+                lines = content.split('\n')
+                has_exception_keyword = False
+                exception_line_num = 0
+
+                for i, line in enumerate(lines, 1):
+                    # Skip comments
+                    stripped = line.strip()
+                    if stripped.startswith('--'):
+                        continue
+                    # Remove inline comments
+                    if '--' in line:
+                        line = line[:line.index('--')]
+                    # Check for exception keyword
+                    if exception_keyword_pattern.search(line):
+                        has_exception_keyword = True
+                        exception_line_num = i
+                        break
+
+                # Check for Functional.Try usage
+                has_functional_try = bool(functional_try_pattern.search(content))
+
+                # Validate rules based on layer
+                if layer_name in ('Infrastructure', 'Presentation'):
+                    # Boundary layers: must use Functional.Try, NO manual exceptions
+                    if has_exception_keyword:
+                        violations.append(
+                            f"  [FORBIDDEN] {rel_path}:{exception_line_num}: "
+                            f"Manual exception handler in {layer_name} layer. "
+                            f"MUST use Functional.Try.Try_To_Result instead."
+                        )
+
+                elif layer_name in ('Domain', 'Application', 'API'):
+                    # Core layers: NO exception keyword allowed at all
+                    if has_exception_keyword:
+                        violations.append(
+                            f"  [FORBIDDEN] {rel_path}:{exception_line_num}: "
+                            f"Exception keyword in {layer_name} layer. "
+                            f"Core layers must use Result types only - no exceptions."
+                        )
+
+            except Exception as e:
+                print(f"  ⚠ Error reading {file_path}: {e}")
+
+        is_valid = len(violations) == 0
+
+        if is_valid:
+            print(f"  ✓ Exception boundary rules validated for {len(all_adb_files)} files")
+        else:
+            print(f"\n  Found {len(violations)} exception boundary violation(s):")
+            for violation in violations:
+                print(violation)
+            print("\n  Reference: See SDS Section 6.3 (lib) or 4.7 (app) for exception boundary rules.")
+
+        return is_valid, violations

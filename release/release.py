@@ -573,6 +573,24 @@ You can:
         if not prompt_user_continue(message):
             return False
 
+    # Step 0h: Validate exception handling boundaries (Ada only)
+    print_info("\nStep 0h: Validating exception handling boundaries...")
+    is_valid, violations = adapter.validate_exception_boundaries(config)
+    if not is_valid:
+        message = f"""Found {len(violations)} exception boundary violation(s).
+
+Architecture Rules (per SDS):
+- Infrastructure/Presentation: MUST use Functional.Try.Try_To_Result
+- Domain/Application/API: NO exception keyword allowed (Result types only)
+- Bootstrap/Main/Test: exceptions allowed
+
+These violations MUST be fixed before release.
+See SDS Section 6.3 (lib) or 4.7 (app) for details.
+
+Press 'q' to quit and fix the violations."""
+        if not prompt_user_continue(message):
+            return False
+
     # Step 1: Clean up temporary files
     print_info("\nStep 1: Cleaning up temporary files...")
     if not adapter.cleanup_temp_files(config):
