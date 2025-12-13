@@ -870,6 +870,7 @@ class BaseReleaseAdapter(ABC):
         exclude_patterns = [
             "vendor/", "node_modules/", ".git/",
             "alire/cache/",  # Alire dependency cache (Ada)
+            "docs/common/",  # Shared submodule docs (belong to reference project, not this project)
             "CHANGELOG.md",  # Changelog may reference old versions
             "architecture_enforcement.md",  # Generic architecture guide uses all layer terms
         ]
