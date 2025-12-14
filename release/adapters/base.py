@@ -695,9 +695,21 @@ class BaseReleaseAdapter(ABC):
         return all_current, issues
 
     def create_git_tag(self, config) -> bool:
-        """Create annotated git tag."""
+        """Create annotated git tag, or skip if it already exists."""
+        import subprocess
         tag_name = config.tag_name
         message = f"Release version {config.version}"
+
+        # Check if tag already exists
+        check_result = subprocess.run(
+            ["git", "tag", "-l", tag_name],
+            cwd=config.project_root,
+            capture_output=True,
+            text=True
+        )
+        if check_result.stdout.strip() == tag_name:
+            print(f"  Tag {tag_name} already exists, skipping creation")
+            return True
 
         result = self.run_command(
             ["git", "tag", "-a", tag_name, "-m", message],
@@ -723,30 +735,54 @@ class BaseReleaseAdapter(ABC):
         return True
 
     def create_github_release(self, config) -> bool:
-        """Create GitHub release using gh CLI."""
+        """Create or update GitHub release using gh CLI."""
+        import subprocess
         changelog_file = config.project_root / "CHANGELOG.md"
         release_notes = f"Release version {config.version}"
 
         if changelog_file.exists():
             try:
                 content = changelog_file.read_text(encoding='utf-8')
-                version_pattern = rf'## \[{re.escape(config.version)}\][^\n]*\n(.*?)(?=\n## |\Z)'
+                version_pattern = (
+                    rf'## \[{re.escape(config.version)}\][^\n]*\n'
+                    r'(.*?)(?=\n## |\Z)'
+                )
                 match = re.search(version_pattern, content, re.DOTALL)
                 if match:
                     release_notes = match.group(1).strip()
             except Exception as e:
                 print(f"Warning: Could not extract release notes: {e}")
 
-        cmd = [
-            "gh", "release", "create", config.tag_name,
-            "--title", f"Release {config.version}",
-            "--notes", release_notes
-        ]
+        # Check if release already exists
+        check_result = subprocess.run(
+            ["gh", "release", "view", config.tag_name],
+            cwd=config.project_root,
+            capture_output=True,
+            text=True
+        )
 
-        result = self.run_command(cmd, config.project_root)
-        if result:
-            print(f"  Created GitHub release {config.tag_name}")
-        return result is not None
+        if check_result.returncode == 0:
+            # Release exists - update it
+            cmd = [
+                "gh", "release", "edit", config.tag_name,
+                "--title", f"Release {config.version}",
+                "--notes", release_notes
+            ]
+            result = self.run_command(cmd, config.project_root)
+            if result:
+                print(f"  Updated existing GitHub release {config.tag_name}")
+            return result is not None
+        else:
+            # Release doesn't exist - create it
+            cmd = [
+                "gh", "release", "create", config.tag_name,
+                "--title", f"Release {config.version}",
+                "--notes", release_notes
+            ]
+            result = self.run_command(cmd, config.project_root)
+            if result:
+                print(f"  Created GitHub release {config.tag_name}")
+            return result is not None
 
     def validate_documentation(self, config) -> Tuple[bool, List[str]]:
         """
