@@ -780,12 +780,18 @@ end {ada_package}.Version;
         """
         Run SPARK formal verification (post-release validation).
 
+        Saves the full log to /tmp/spark_prove_v{version}.log for
+        attachment to the GitHub release.
+
         Args:
             config: ReleaseConfig instance
 
         Returns:
             Tuple of (success, results_summary)
         """
+        # Initialize log path (will be set if prove runs successfully)
+        self._spark_log_path = None
+
         if not self.has_spark_project(config):
             return True, "No SPARK project (skipped)"
 
@@ -796,26 +802,36 @@ end {ada_package}.Version;
         if makefile.exists():
             # Capture output to parse results
             import subprocess
+            from pathlib import Path
             try:
                 result = subprocess.run(
                     ['make', 'spark-prove'],
                     cwd=config.project_root,
                     capture_output=True,
                     text=True,
-                    timeout=5400  # 90 minute timeout (SPARK prove can take 45-90 min)
+                    timeout=5400  # 90 min timeout (SPARK prove can take 45-90 min)
                 )
 
                 output = result.stdout + result.stderr
 
+                # Save log to temp file for release attachment
+                log_path = Path(f'/tmp/spark_prove_v{config.version}.log')
+                log_path.write_text(output, encoding='utf-8')
+                self._spark_log_path = log_path
+                print(f"  SPARK log saved to: {log_path}")
+
                 # Parse results from gnatprove output
                 # Look for summary line like "Summary logged in ..."
                 # and count info/warning/error lines
-                flow_count = len(re.findall(r': info: .*flow', output, re.IGNORECASE))
-                proved_count = len(re.findall(r': info: .*proved', output, re.IGNORECASE))
+                flow_count = len(
+                    re.findall(r': info: .*flow', output, re.IGNORECASE))
+                proved_count = len(
+                    re.findall(r': info: .*proved', output, re.IGNORECASE))
                 medium_count = len(re.findall(r': medium:', output))
 
                 total_checks = flow_count + proved_count + medium_count
-                summary = f"{total_checks} checks: {flow_count} flow, {proved_count} proved, {medium_count} unproved"
+                summary = (f"{total_checks} checks: {flow_count} flow, "
+                           f"{proved_count} proved, {medium_count} unproved")
 
                 if result.returncode == 0:
                     print(f"  SPARK PROVE passed: {summary}")
@@ -828,7 +844,7 @@ end {ada_package}.Version;
                     return False, summary
 
             except subprocess.TimeoutExpired:
-                print("  SPARK PROVE timed out (>30 minutes)")
+                print("  SPARK PROVE timed out (>90 minutes)")
                 return False, "Timeout"
             except Exception as e:
                 print(f"  SPARK PROVE error: {e}")
@@ -886,20 +902,39 @@ Verified using SPARK Ada formal verification tools."""
 
             new_body = current_body + spark_section
 
-            # Update release
+            # Update release notes
             result = subprocess.run(
-                ['gh', 'release', 'edit', f'v{config.version}', '--notes', new_body],
+                ['gh', 'release', 'edit', f'v{config.version}',
+                 '--notes', new_body],
                 cwd=config.project_root,
                 capture_output=True,
                 text=True
             )
 
-            if result.returncode == 0:
-                print("  GitHub release updated with SPARK results")
-                return True
-            else:
+            if result.returncode != 0:
                 print(f"  Could not update release: {result.stderr}")
                 return False
+
+            print("  GitHub release updated with SPARK results")
+
+            # Upload SPARK prove log as release asset if available
+            if hasattr(self, '_spark_log_path') and self._spark_log_path:
+                log_path = self._spark_log_path
+                if log_path.exists():
+                    upload_result = subprocess.run(
+                        ['gh', 'release', 'upload', f'v{config.version}',
+                         str(log_path), '--clobber'],
+                        cwd=config.project_root,
+                        capture_output=True,
+                        text=True
+                    )
+                    if upload_result.returncode == 0:
+                        print(f"  Attached SPARK log: {log_path.name}")
+                    else:
+                        print(f"  Warning: Could not attach log: "
+                              f"{upload_result.stderr}")
+
+            return True
 
         except Exception as e:
             print(f"  Error updating release: {e}")
