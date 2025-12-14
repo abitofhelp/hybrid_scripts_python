@@ -376,13 +376,15 @@ class BaseReleaseAdapter(ABC):
                     flags=re.IGNORECASE | re.MULTILINE
                 )
 
-            # Add trailing spaces for proper GitHub markdown rendering
+            # Normalize metadata lines to use <br> tags for proper rendering
             lines = content.split('\n')
             new_lines = []
             for line in lines:
                 if re.match(r'^\*\*(Version|Date|SPDX|License|Copyright|Status):', line):
-                    if not line.endswith('  '):
-                        line = line.rstrip() + '  '
+                    # Remove any trailing spaces and add <br> if not present
+                    line = line.rstrip()
+                    if not line.endswith('<br>'):
+                        line = line + '<br>'
                 new_lines.append(line)
             content = '\n'.join(new_lines)
 
