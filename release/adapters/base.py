@@ -291,113 +291,58 @@ class BaseReleaseAdapter(ABC):
 
         return versioned_files
 
-    def update_markdown_version(self, file_path: Path, config) -> bool:
+    def replace_markdown_header(self, file_path: Path, config) -> bool:
         """
-        Update version and metadata in markdown file headers.
+        Replace markdown metadata header with canonical format.
 
-        Handles these patterns:
-        - **Version:** 1.0.0
-        - **Date:** October 24, 2025
-        - **Copyright:** (c) 2025 Michael Gardner, A Bit of Help, Inc.
-        - **Status:** Unreleased / Released
+        Finds the header block (Version through Status lines) and replaces
+        it entirely with a freshly generated canonical header.
         """
         try:
             content = file_path.read_text(encoding='utf-8')
-            old_content = content
-
-            # Pattern 1: **Version:** 1.0.0 (bold with colon)
-            content = re.sub(
-                r'(\*\*Version:\*\*\s+)[^\s\n]+',
-                rf'\g<1>{config.version}',
-                content,
-                flags=re.IGNORECASE
-            )
-
-            # Pattern 2: Version: 1.0.0 (plain with colon)
-            content = re.sub(
-                r'^(Version:\s+)[^\s\n]+',
-                rf'\g<1>{config.version}',
-                content,
-                flags=re.IGNORECASE | re.MULTILINE
-            )
-
-            # Pattern 3: **Version 1.0.0** (bold without colon)
-            content = re.sub(
-                r'(\*\*Version\s+)\d+\.\d+\.\d+(\*\*)',
-                rf'\g<1>{config.version}\g<2>',
-                content,
-                flags=re.IGNORECASE
-            )
-
-            # Pattern 4: **Date:** October 24, 2025 (bold)
-            content = re.sub(
-                r'(\*\*Date:\*\*\s+)[^\n]+',
-                rf'\g<1>{config.date_str}',
-                content,
-                flags=re.IGNORECASE
-            )
-
-            # Pattern 5: Date: October 24, 2025 (plain)
-            content = re.sub(
-                r'^(Date:\s+)[^\n]+',
-                rf'\g<1>{config.date_str}',
-                content,
-                flags=re.IGNORECASE | re.MULTILINE
-            )
-
-            # Pattern 6: **Copyright:** (c) 2024 -> (c) 2025 (update year only)
-            content = re.sub(
-                r'(\*\*Copyright:\*\*\s+©\s*)\d{4}',
-                rf'\g<1>{config.year}',
-                content,
-                flags=re.IGNORECASE
-            )
-
-            # Pattern 7: Copyright: (c) 2024 -> (c) 2025 (plain)
-            content = re.sub(
-                r'^(Copyright:\s+©\s*)\d{4}',
-                rf'\g<1>{config.year}',
-                content,
-                flags=re.IGNORECASE | re.MULTILINE
-            )
-
-            # Pattern 8: **Status:** Unreleased -> Released
-            if not config.is_prerelease:
-                content = re.sub(
-                    r'(\*\*Status:\*\*\s+)Unreleased',
-                    r'\g<1>Released',
-                    content,
-                    flags=re.IGNORECASE
-                )
-                content = re.sub(
-                    r'^(Status:\s+)Unreleased',
-                    r'\g<1>Released',
-                    content,
-                    flags=re.IGNORECASE | re.MULTILINE
-                )
-
-            # Normalize metadata lines to use <br> tags for proper rendering
             lines = content.split('\n')
-            new_lines = []
-            for line in lines:
-                if re.match(r'^\*\*(Version|Date|SPDX|License|Copyright|Status):', line):
-                    # Remove any trailing spaces and add <br> if not present
-                    line = line.rstrip()
-                    if not line.endswith('<br>'):
-                        line = line + '<br>'
-                new_lines.append(line)
-            content = '\n'.join(new_lines)
 
-            if content != old_content:
+            # Find header block boundaries
+            header_start = None
+            header_end = None
+
+            for i, line in enumerate(lines):
+                # Header starts at first **Version:** line
+                if header_start is None and re.match(r'^\*\*Version:', line):
+                    header_start = i
+                # Header ends after **Status:** line
+                elif header_start is not None and re.match(r'^\*\*Status:', line):
+                    header_end = i + 1
+                    break
+
+            if header_start is None or header_end is None:
+                return False  # No valid header block found
+
+            # Generate canonical header
+            status = "Unreleased" if config.is_prerelease else "Released"
+            header_lines = [
+                f"**Version:** {config.version}<br>",
+                f"**Date:** {config.date_str}<br>",
+                "**SPDX-License-Identifier:** BSD-3-Clause<br>",
+                "**License File:** See the LICENSE file in the project root<br>",
+                f"**Copyright:** © {config.year} Michael Gardner, A Bit of Help, Inc.<br>",
+                f"**Status:** {status}",
+            ]
+
+            # Replace header block
+            new_lines = lines[:header_start] + header_lines + lines[header_end:]
+            new_content = '\n'.join(new_lines)
+
+            if new_content != content:
                 if getattr(config, 'dry_run', False):
                     return True  # Report as updated in dry-run
-                file_path.write_text(content, encoding='utf-8')
+                file_path.write_text(new_content, encoding='utf-8')
                 return True
 
             return False
 
         except Exception as e:
-            print(f"Error updating {file_path}: {e}")
+            print(f"Error replacing header in {file_path}: {e}")
             return False
 
     def add_markdown_header(self, file_path: Path, config) -> bool:
@@ -467,16 +412,14 @@ class BaseReleaseAdapter(ABC):
         for md_file in all_md_files:
             try:
                 content = md_file.read_text(encoding='utf-8')
-                has_metadata = bool(re.search(
-                    r'Version\s*[:)]|version\s*[:)]|\*\*Version\s+\d+\.\d+|Copyright\s*©\s*\d{4}',
-                    content, re.IGNORECASE
-                ))
+                # Check for canonical header format (Version through Status block)
+                has_header = bool(re.search(r'^\*\*Version:', content, re.MULTILINE))
 
                 dry_prefix = "[DRY-RUN] Would update" if getattr(config, 'dry_run', False) else "Updated"
                 dry_prefix_add = "[DRY-RUN] Would add" if getattr(config, 'dry_run', False) else "Added"
 
-                if has_metadata:
-                    if self.update_markdown_version(md_file, config):
+                if has_header:
+                    if self.replace_markdown_header(md_file, config):
                         rel_path = md_file.relative_to(config.project_root)
                         print(f"  {dry_prefix} {rel_path}")
                         updated_count += 1
