@@ -1175,6 +1175,95 @@ class BaseReleaseAdapter(ABC):
 
         return is_valid, errors
 
+    def validate_spark_section(self, config) -> Tuple[bool, List[str]]:
+        """
+        Validate SPARK Formal Verification section in README.md.
+
+        Rules (per documentation agent):
+        - Ada projects: SPARK section MUST exist
+        - Go projects: SPARK section MUST NOT exist (SPARK is Ada-specific)
+
+        Args:
+            config: ReleaseConfig instance
+
+        Returns:
+            Tuple of (is_valid, list_of_error_messages)
+        """
+        print("Validating SPARK Formal Verification section...")
+        errors = []
+
+        readme_path = config.project_root / "README.md"
+
+        # Check if README.md exists
+        if not readme_path.exists():
+            errors.append("  ✗ README.md not found")
+            return False, errors
+
+        try:
+            content = readme_path.read_text(encoding='utf-8')
+
+            # Look for SPARK section
+            spark_section_pattern = r'^#{1,3}\s+SPARK\s+(?:Formal\s+)?Verification'
+            spark_section_match = re.search(spark_section_pattern, content, re.MULTILINE | re.IGNORECASE)
+
+            # Determine expected presence based on language
+            if config.language == Language.ADA:
+                # Ada projects MUST have SPARK section
+                if not spark_section_match:
+                    errors.append("  ✗ Missing 'SPARK Formal Verification' section")
+                    errors.append("    Ada projects MUST include a SPARK section in README.md")
+                    errors.append("    See documentation agent for required format")
+                    return False, errors
+
+                spark_section_line = content[:spark_section_match.start()].count('\n') + 1
+                print(f"  ✓ Found SPARK Formal Verification section at line {spark_section_line}")
+
+                # Validate that Results references CHANGELOG (not hardcoded metrics)
+                # Extract section content until next heading
+                spark_section_start = spark_section_match.start()
+                spark_section_end_match = re.search(
+                    r'\n#{1,3}\s+(?!Verification|SPARK)',
+                    content[spark_section_start + len(spark_section_match.group()):],
+                )
+                if spark_section_end_match:
+                    spark_section_content = content[spark_section_start:spark_section_start + len(spark_section_match.group()) + spark_section_end_match.start()]
+                else:
+                    spark_section_content = content[spark_section_start:]
+
+                # Check for CHANGELOG reference in Results
+                if re.search(r'CHANGELOG', spark_section_content, re.IGNORECASE):
+                    print("  ✓ SPARK Results references CHANGELOG (no drift)")
+                else:
+                    # Check if there are hardcoded metrics (numbers followed by checks/proved/etc)
+                    if re.search(r'\d+\s+(?:checks|proved|unproved|subprograms)', spark_section_content, re.IGNORECASE):
+                        errors.append("  ⚠ SPARK Results contains hardcoded metrics")
+                        errors.append("    Results should reference CHANGELOG to prevent drift")
+                        errors.append("    Use: See <a href=\"CHANGELOG.md\">CHANGELOG</a> for current proof statistics")
+
+                print("  ✓ SPARK Formal Verification section validation passed")
+
+            elif config.language == Language.GO:
+                # Go projects MUST NOT have SPARK section
+                if spark_section_match:
+                    spark_section_line = content[:spark_section_match.start()].count('\n') + 1
+                    errors.append(f"  ✗ SPARK section found at line {spark_section_line} but should not exist")
+                    errors.append("    SPARK is Ada-specific; Go projects should omit this section")
+                    return False, errors
+
+                print("  ✓ No SPARK section found (correct for Go projects)")
+
+            else:
+                # Future languages (Rust, etc.) - skip for now
+                print(f"  ℹ SPARK validation not applicable for {config.language.value} projects")
+
+        except Exception as e:
+            errors.append(f"  ✗ Error reading README.md: {e}")
+            return False, errors
+
+        is_valid = len([e for e in errors if '✗' in e]) == 0
+
+        return is_valid, errors
+
     def scan_git_history_for_ai_markers(self, config) -> Tuple[bool, List[str]]:
         """
         Scan entire git history for AI assistant attribution markers.

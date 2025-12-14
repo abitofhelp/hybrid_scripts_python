@@ -618,6 +618,26 @@ Press 'q' to quit and fix the violations."""
     print_info("\nStep 5: Updating markdown documentation...")
     adapter.update_all_markdown_files(config)
 
+    # Step 5a: Validate SPARK section in README (after doc update)
+    print_info("\nStep 5a: Validating SPARK Formal Verification section...")
+    is_valid, spark_errors = adapter.validate_spark_section(config)
+    if not is_valid:
+        print_error("SPARK section validation FAILED")
+        print_info("")
+        print_info("Rules (per documentation agent):")
+        print_info("  - Ada projects: SPARK section MUST exist in README.md")
+        print_info("  - Go projects: SPARK section MUST NOT exist (Ada-specific)")
+        print_info("")
+        print_info("For Ada projects, see documentation agent for required format.")
+        print_info("Results field should reference CHANGELOG, not hardcoded metrics.")
+        message = """SPARK section validation failed.
+
+You can:
+- Press ENTER to acknowledge and continue (if fix is planned)
+- Press 'q' to quit and fix before releasing"""
+        if not prompt_user_continue(message):
+            return False
+
     # Step 6: CHANGELOG checkpoint
     changelog_file = config.project_root / "CHANGELOG.md"
     if changelog_file.exists():
