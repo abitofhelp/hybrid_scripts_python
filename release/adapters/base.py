@@ -426,12 +426,12 @@ class BaseReleaseAdapter(ABC):
             status = "Unreleased" if config.is_prerelease else "Released"
             header = (
                 "\n"
-                f"**Version:** {config.version}  \n"
-                f"**Date:** {config.date_str}  \n"
-                f"**SPDX-License-Identifier:** BSD-3-Clause  \n"
-                f"**License File:** See the LICENSE file in the project root.  \n"
-                f"**Copyright:** (c) {config.year} Michael Gardner, A Bit of Help, Inc.  \n"
-                f"**Status:** {status}  \n"
+                f"**Version:** {config.version}<br>\n"
+                f"**Date:** {config.date_str}<br>\n"
+                f"**SPDX-License-Identifier:** BSD-3-Clause<br>\n"
+                f"**License File:** See the LICENSE file in the project root<br>\n"
+                f"**Copyright:** © {config.year} Michael Gardner, A Bit of Help, Inc.<br>\n"
+                f"**Status:** {status}\n"
                 "\n"
             )
 

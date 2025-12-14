@@ -435,17 +435,17 @@ class BaseAdapter(ABC):
         """
         changelog_path = config.target_dir / 'CHANGELOG.md'
 
-        # Get current date in standard format
-        today = date.today().strftime("%B %d, %Y")
+        # Get current date in ISO format (YYYY-MM-DD)
+        today = date.today().strftime("%Y-%m-%d")
 
         # Create fresh changelog content
         changelog_content = f"""# Changelog
 
-**Version:** Unreleased
-**Date:** {today}
-**SPDX-License-Identifier:** BSD-3-Clause
-**License File:** See the LICENSE file in the project root.
-**Copyright:** (c) 2025 Michael Gardner, A Bit of Help, Inc.
+**Version:** Unreleased<br>
+**Date:** {today}<br>
+**SPDX-License-Identifier:** BSD-3-Clause<br>
+**License File:** See the LICENSE file in the project root<br>
+**Copyright:** © 2025 Michael Gardner, A Bit of Help, Inc.<br>
 **Status:** Development
 
 All notable changes to this project will be documented in this file.

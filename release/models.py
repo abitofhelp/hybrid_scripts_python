@@ -58,7 +58,7 @@ class ReleaseConfig:
 
     def __post_init__(self):
         """Initialize computed fields."""
-        self.date_str = datetime.now().strftime("%B %d, %Y")
+        self.date_str = datetime.now().strftime("%Y-%m-%d")
         self.year = datetime.now().year
 
     @property
