@@ -1715,7 +1715,7 @@ class BaseReleaseAdapter(ABC):
                         violations.append(
                             f"  [FORBIDDEN] {rel_path}:{exception_line_num}: "
                             f"Manual exception handler in {layer_name} layer. "
-                            f"MUST use Functional.Try.Try_To_Result instead."
+                            f"MUST use Functional.Try.Map_To_Result instead."
                         )
 
                 elif layer_name in ('Domain', 'Application', 'API'):

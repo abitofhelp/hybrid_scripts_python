@@ -581,7 +581,7 @@ You can:
             message = f"""Found {len(violations)} exception boundary violation(s).
 
 Architecture Rules (per SDS):
-- Infrastructure/Presentation: MUST use Functional.Try.Try_To_Result
+- Infrastructure/Presentation: MUST use Functional.Try.Map_To_Result
 - Domain/Application/API: NO exception keyword allowed (Result types only)
 - Bootstrap/Main/Test: exceptions allowed
 
