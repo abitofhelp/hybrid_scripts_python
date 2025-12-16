@@ -649,6 +649,85 @@ end {ada_package}.Version;
 
         return True
 
+    def update_readme_body_versions(self, config) -> bool:
+        """
+        Update version references in README.md body (not header).
+
+        Handles patterns:
+        - **Status:** Released (vX.Y.Z) -> updates to current version
+        - project_name = "^X.Y.Z" -> updates to current version
+
+        Args:
+            config: ReleaseConfig instance
+
+        Returns:
+            True if successful
+        """
+        readme_file = config.project_root / 'README.md'
+        if not readme_file.exists():
+            return True
+
+        try:
+            content = readme_file.read_text(encoding='utf-8')
+            original = content
+            updated_patterns = []
+
+            # Get project name from alire.toml for dependency pattern
+            alire_toml = config.project_root / 'alire.toml'
+            project_name = None
+            if alire_toml.exists():
+                alire_content = alire_toml.read_text(encoding='utf-8')
+                name_match = re.search(
+                    r'^name\s*=\s*"([^"]+)"', alire_content, re.MULTILINE)
+                if name_match:
+                    project_name = name_match.group(1)
+
+            # Pattern 1: **Status:** Released (vX.Y.Z)
+            status_pattern = r'(\*\*Status:\*\*\s*Released\s*\(v)\d+\.\d+\.\d+(\))'
+            if re.search(status_pattern, content):
+                content = re.sub(
+                    status_pattern,
+                    rf'\g<1>{config.version}\g<2>',
+                    content
+                )
+                updated_patterns.append('Project Status version')
+
+            # Pattern 2: project_name = "^X.Y.Z" (dependency example)
+            if project_name:
+                dep_pattern = rf'({re.escape(project_name)}\s*=\s*"\^)\d+\.\d+\.\d+(")'
+                if re.search(dep_pattern, content):
+                    content = re.sub(
+                        dep_pattern,
+                        rf'\g<1>{config.version}\g<2>',
+                        content
+                    )
+                    updated_patterns.append('dependency version example')
+
+            # Pattern 3: Footer copyright year
+            # Matches: Copyright 2024 Michael Gardner...
+            # (without © symbol, different from header)
+            footer_copyright = r'(Copyright )20\d\d( Michael Gardner)'
+            if re.search(footer_copyright, content):
+                content = re.sub(
+                    footer_copyright,
+                    rf'\g<1>{config.year}\g<2>',
+                    content
+                )
+                updated_patterns.append('footer copyright year')
+
+            if content != original:
+                if not config.dry_run:
+                    readme_file.write_text(content, encoding='utf-8')
+                print(f"  Updated README.md body: {', '.join(updated_patterns)}")
+            else:
+                print(f"  README.md body versions already current")
+
+            return True
+
+        except Exception as e:
+            print(f"  Warning: Could not update README.md body: {e}")
+            return True  # Non-fatal
+
     def run_format(self, config) -> bool:
         """
         Run Ada code formatting.

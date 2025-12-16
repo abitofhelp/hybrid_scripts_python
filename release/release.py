@@ -682,6 +682,11 @@ If CHANGELOG is already correct, just press ENTER to continue."""
         print_info("\nStep 8a: Updating test counts in docs...")
         adapter.update_test_counts_in_docs(config)
 
+    # Step 8b: Update README body version references (Ada only)
+    if hasattr(adapter, 'update_readme_body_versions'):
+        print_info("\nStep 8b: Updating README.md body versions...")
+        adapter.update_readme_body_versions(config)
+
     # Checkpoint: Review and commit changes (now includes test counts)
     message = f"""All files have been updated for release {config.version}
 >>>> DO NOT STAGE FOR COMMIT: /config/*_config.gpr, /config/*_config.h, /config/*_config.ads <<<<
