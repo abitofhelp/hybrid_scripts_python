@@ -682,7 +682,7 @@ end {ada_package}.Version;
                 if name_match:
                     project_name = name_match.group(1)
 
-            # Pattern 1: **Status:** Released (vX.Y.Z)
+            # Pattern 1a: **Status:** Released (vX.Y.Z)
             status_pattern = r'(\*\*Status:\*\*\s*Released\s*\(v)\d+\.\d+\.\d+(\))'
             if re.search(status_pattern, content):
                 content = re.sub(
@@ -691,6 +691,18 @@ end {ada_package}.Version;
                     content
                 )
                 updated_patterns.append('Project Status version')
+
+            # Pattern 1b: **Status**: Production Ready (vX.Y.Z)
+            # Note: colon OUTSIDE bold, different status text
+            status_pattern2 = r'(\*\*Status\*\*:\s*(?:Production Ready|Released|Beta|Development)\s*\(v)\d+\.\d+\.\d+(\))'
+            if re.search(status_pattern2, content):
+                content = re.sub(
+                    status_pattern2,
+                    rf'\g<1>{config.version}\g<2>',
+                    content
+                )
+                if 'Project Status version' not in updated_patterns:
+                    updated_patterns.append('Project Status version')
 
             # Pattern 2: project_name = "^X.Y.Z" (dependency example)
             if project_name:
