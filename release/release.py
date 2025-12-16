@@ -842,8 +842,16 @@ def create_release(config, adapter) -> bool:
         print_info("\nRunning SPARK PROVE formal verification...")
         print_info("(This may take several minutes - go have lunch!)")
         success, spark_summary = adapter.run_spark_prove(config)
-        if success and spark_summary and hasattr(adapter, 'update_github_release_with_spark'):
-            adapter.update_github_release_with_spark(config, spark_summary)
+        if success and spark_summary:
+            # Update GitHub release with SPARK results
+            if hasattr(adapter, 'update_github_release_with_spark'):
+                adapter.update_github_release_with_spark(config, spark_summary)
+            # Update README.md SPARK badges (Checked→Proved, mode→prove)
+            if hasattr(adapter, 'update_spark_badges_in_readme'):
+                adapter.update_spark_badges_in_readme(config, spark_summary)
+            # Update CHANGELOG.md SPARK Status line
+            if hasattr(adapter, 'update_changelog_spark_status'):
+                adapter.update_changelog_spark_status(config, spark_summary)
     elif 'spark' in skip_stages:
         print_info("\nSkipping SPARK PROVE (--skip=spark)")
 

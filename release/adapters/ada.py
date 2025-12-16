@@ -887,7 +887,16 @@ end {ada_package}.Version;
             return True, "No SPARK project (skipped)"
 
         print("Running SPARK PROVE formal verification...")
-        print("  (This may take several minutes...)")
+        print("  (This may take 1-3 hours depending on project size...)")
+        print("")
+        print("  ┌─────────────────────────────────────────────────────────────┐")
+        print(f"  │ Monitor progress with:                                      │")
+        print(f"  │   watch -n 60 'tail -5 /tmp/spark_prove_v{config.version}.log'     │")
+        print("  │                                                             │")
+        print("  │ Or in another terminal:                                     │")
+        print(f"  │   tail -f /tmp/spark_prove_v{config.version}.log                   │")
+        print("  └─────────────────────────────────────────────────────────────┘")
+        print("")
 
         makefile = config.project_root / 'Makefile'
         if makefile.exists():
@@ -900,7 +909,7 @@ end {ada_package}.Version;
                     cwd=config.project_root,
                     capture_output=True,
                     text=True,
-                    timeout=5400  # 90 min timeout (SPARK prove can take 45-90 min)
+                    timeout=14400  # 4 hour timeout (SPARK prove: tzif ~80min, zoneinfo may be longer)
                 )
 
                 output = result.stdout + result.stderr
@@ -935,7 +944,7 @@ end {ada_package}.Version;
                     return False, summary
 
             except subprocess.TimeoutExpired:
-                print("  SPARK PROVE timed out (>90 minutes)")
+                print("  SPARK PROVE timed out (>4 hours)")
                 return False, "Timeout"
             except Exception as e:
                 print(f"  SPARK PROVE error: {e}")
@@ -1029,4 +1038,115 @@ Verified using SPARK Ada formal verification tools."""
 
         except Exception as e:
             print(f"  Error updating release: {e}")
+            return False
+
+    def update_spark_badges_in_readme(self, config, spark_summary: str) -> bool:
+        """
+        Update SPARK badges in README.md after successful spark-prove.
+
+        Updates TWO locations:
+        1. Top badges line: SPARK-Checked-yellow → SPARK-Proved-green
+        2. SPARK Formal Verification table: Status badge + Mode field
+
+        Args:
+            config: ReleaseConfig instance
+            spark_summary: SPARK verification results (e.g., "402 checks: 401 proved, 1 unproved")
+
+        Returns:
+            True if successful
+        """
+        readme_file = config.project_root / 'README.md'
+        if not readme_file.exists():
+            print("  README.md not found")
+            return False
+
+        try:
+            content = readme_file.read_text(encoding='utf-8')
+            original = content
+            updated_items = []
+
+            # Pattern 1: Top badges line - SPARK badge
+            # [![SPARK](https://img.shields.io/badge/SPARK-Checked-yellow.svg)]
+            # → [![SPARK](https://img.shields.io/badge/SPARK-Proved-green.svg)]
+            old_badge = r'SPARK-Checked-yellow\.svg'
+            new_badge = 'SPARK-Proved-green.svg'
+            if re.search(old_badge, content):
+                content = re.sub(old_badge, new_badge, content)
+                updated_items.append("top badge (Checked→Proved)")
+
+            # Pattern 2: SPARK Formal Verification table - Status row
+            # <td><img src="https://img.shields.io/badge/SPARK-Checked-yellow.svg"
+            # → <td><img src="https://img.shields.io/badge/SPARK-Proved-green.svg"
+            # (same pattern, already handled above)
+
+            # Pattern 3: Mode field in SPARK table
+            # <td>gnatprove --mode=check</td>
+            # → <td>gnatprove --mode=prove --level=2</td>
+            old_mode = r'gnatprove --mode=check[^<]*'
+            new_mode = 'gnatprove --mode=prove --level=2'
+            if re.search(old_mode, content):
+                content = re.sub(old_mode, new_mode, content)
+                updated_items.append("mode (check→prove --level=2)")
+
+            # Pattern 4: Update Results field if it exists and references CHANGELOG
+            # Keep the CHANGELOG reference but could add summary
+            # (Optional - leave CHANGELOG as source of truth)
+
+            if content != original:
+                readme_file.write_text(content, encoding='utf-8')
+                print(f"  Updated README.md SPARK status: {', '.join(updated_items)}")
+                return True
+            else:
+                print("  README.md SPARK badges already show Proved status")
+                return True
+
+        except Exception as e:
+            print(f"  Error updating README.md SPARK badges: {e}")
+            return False
+
+    def update_changelog_spark_status(self, config, spark_summary: str) -> bool:
+        """
+        Update CHANGELOG.md SPARK Status line for current version.
+
+        Updates the **SPARK Status:** line in the current version's section.
+
+        Args:
+            config: ReleaseConfig instance
+            spark_summary: SPARK verification results
+
+        Returns:
+            True if successful
+        """
+        changelog_file = config.project_root / 'CHANGELOG.md'
+        if not changelog_file.exists():
+            print("  CHANGELOG.md not found")
+            return False
+
+        try:
+            content = changelog_file.read_text(encoding='utf-8')
+
+            # Find the current version section and update SPARK Status line
+            # Pattern: **SPARK Status:** ... (within current version section)
+            version_pattern = rf'(## \[{re.escape(config.version)}\][^\n]*\n)'
+            match = re.search(version_pattern, content)
+
+            if match:
+                # Find SPARK Status line after version header
+                spark_pattern = r'(\*\*SPARK Status:\*\*)[^\n]*'
+                new_spark_line = f'**SPARK Status:** {spark_summary} (--mode=prove --level=2)'
+
+                if re.search(spark_pattern, content):
+                    content = re.sub(spark_pattern, new_spark_line, content, count=1)
+                    changelog_file.write_text(content, encoding='utf-8')
+                    print(f"  Updated CHANGELOG.md SPARK Status")
+                    return True
+                else:
+                    print("  CHANGELOG.md has no SPARK Status line to update")
+                    return True
+
+            print(f"  Version {config.version} section not found in CHANGELOG.md")
+            return False
+
+        except Exception as e:
+            print(f"  Error updating CHANGELOG.md SPARK status: {e}")
             return False
