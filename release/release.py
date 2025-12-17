@@ -852,6 +852,18 @@ def create_release(config, adapter) -> bool:
             # Update CHANGELOG.md SPARK Status line
             if hasattr(adapter, 'update_changelog_spark_status'):
                 adapter.update_changelog_spark_status(config, spark_summary)
+            # Commit and push SPARK documentation updates
+            import subprocess
+            try:
+                subprocess.run(['git', 'add', 'README.md', 'CHANGELOG.md'],
+                             cwd=config.project_root, check=True, capture_output=True)
+                subprocess.run(['git', 'commit', '-m', 'docs: update SPARK status after verification'],
+                             cwd=config.project_root, check=True, capture_output=True)
+                subprocess.run(['git', 'push'],
+                             cwd=config.project_root, check=True, capture_output=True)
+                print("  Committed and pushed SPARK documentation updates")
+            except subprocess.CalledProcessError:
+                print("  Note: No SPARK doc changes to commit (already up to date)")
     elif 'spark' in skip_stages:
         print_info("\nSkipping SPARK PROVE (--skip=spark)")
 
