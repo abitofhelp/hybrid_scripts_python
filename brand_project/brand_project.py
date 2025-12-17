@@ -25,7 +25,10 @@ from typing import Optional, List, Tuple
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from common import print_success, print_error, print_warning, print_info, print_section, configure_xmlada_dependency
+from common import (
+    print_success, print_error, print_warning, print_info, print_section,
+    configure_xmlada_dependency, detect_project_type
+)
 
 # Support both direct script execution and module import
 try:
@@ -142,8 +145,16 @@ def validate_generated_project(target_dir: Path, language: Language) -> Tuple[bo
     common_dirs = ["docs", "docs/common", "docs/diagrams", "docs/guides",
                    "scripts/python", "test", "test/python"]
     if language == Language.ADA:
-        common_dirs.extend(["src/api", "src/application", "src/domain",
-                           "src/infrastructure", "test/unit", "test/integration", "test/common"])
+        # Use detect_project_type to determine library vs application structure
+        is_library = detect_project_type(target_dir)
+        if is_library:
+            # Library: 4-layer (domain, application, infrastructure, api)
+            common_dirs.extend(["src/api", "src/application", "src/domain",
+                               "src/infrastructure", "test/unit", "test/integration", "test/common"])
+        else:
+            # Application: 5-layer (domain, application, infrastructure, presentation, bootstrap)
+            common_dirs.extend(["src/bootstrap", "src/presentation", "src/application", "src/domain",
+                               "src/infrastructure", "test/unit", "test/integration", "test/common"])
     elif language == Language.GO:
         common_dirs.extend(["internal/domain", "internal/application", "internal/infrastructure"])
 
@@ -184,12 +195,12 @@ def validate_generated_project(target_dir: Path, language: Language) -> Tuple[bo
             if "gnatcov" not in content.lower():
                 failures.append("test/alire.toml should contain gnatcov")
 
-        # Check Makefile uses nested crate pattern
+        # Check Makefile has coverage support via Python script
         makefile = target_dir / "Makefile"
         if makefile.exists():
             content = makefile.read_text()
-            if "cd test && alr exec --" not in content:
-                failures.append("Makefile coverage targets should use 'cd test && alr exec --'")
+            if "coverage_ada.py" not in content:
+                failures.append("Makefile should have coverage support (scripts/python/makefile/coverage_ada.py)")
 
         # Check GPR file exists
         if not list(target_dir.glob("*.gpr")):
