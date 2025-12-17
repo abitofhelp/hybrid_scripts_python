@@ -27,12 +27,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-
-class Language(Enum):
-    """Supported programming languages."""
-    GO = 'go'
-    ADA = 'ada'
-    RUST = 'rust'  # Future support
+# Import Language from common to avoid duplication
+try:
+    from ..common import Language
+except ImportError:
+    from common import Language
 
 
 class ReleaseAction(Enum):

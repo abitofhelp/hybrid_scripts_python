@@ -30,9 +30,12 @@
 # ==============================================================================
 
 import platform
+import re
 import shutil
 import subprocess
 import sys
+from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 
@@ -221,3 +224,165 @@ def configure_xmlada_dependency(project_root, verbose: bool = False) -> bool:
             print_warning(f"Error configuring xmlada: {e}")
 
     return configured_count == len(xmlada_dirs)
+
+
+# ==============================================================================
+# Language Enum and Detection
+# ==============================================================================
+
+class Language(Enum):
+    """Supported programming languages."""
+    GO = 'go'
+    ADA = 'ada'
+    RUST = 'rust'
+
+
+def detect_language(project_root: Path) -> Optional[Language]:
+    """
+    Auto-detect project language based on configuration files.
+
+    Args:
+        project_root: Path to project root directory
+
+    Returns:
+        Detected Language enum or None if unknown
+    """
+    if isinstance(project_root, str):
+        project_root = Path(project_root)
+
+    # Check for Go
+    if (project_root / 'go.mod').exists() or (project_root / 'go.work').exists():
+        return Language.GO
+
+    # Check for Ada (GPR files or alire.toml)
+    if (project_root / 'alire.toml').exists():
+        return Language.ADA
+    if list(project_root.glob('*.gpr')):
+        return Language.ADA
+    if (project_root / 'src').exists() and list((project_root / 'src').glob('**/*.gpr')):
+        return Language.ADA
+
+    # Check for Rust
+    if (project_root / 'Cargo.toml').exists():
+        return Language.RUST
+
+    return None
+
+
+def detect_project_type(project_root: Path) -> bool:
+    """
+    Detect if project is a library (vs application).
+
+    Args:
+        project_root: Path to project root
+
+    Returns:
+        True if library, False if application
+    """
+    if isinstance(project_root, str):
+        project_root = Path(project_root)
+
+    # Check for library/application indicators
+    # Go structure: api/, bootstrap/, cmd/ at root
+    # Ada structure: src/api/, src/bootstrap/, src/cmd/ under src/
+    api_dir = project_root / "api"
+    api_dir_ada = project_root / "src" / "api"
+    bootstrap_dir = project_root / "bootstrap"
+    bootstrap_dir_ada = project_root / "src" / "bootstrap"
+    cmd_dir = project_root / "cmd"
+    cmd_dir_ada = project_root / "src" / "cmd"
+
+    has_api = api_dir.exists() or api_dir_ada.exists()
+    has_bootstrap = bootstrap_dir.exists() or bootstrap_dir_ada.exists()
+    has_cmd = cmd_dir.exists() or cmd_dir_ada.exists()
+
+    # Libraries have api/ but not bootstrap/ or cmd/
+    if has_api and not has_bootstrap and not has_cmd:
+        return True
+
+    # Applications have bootstrap/ and/or cmd/
+    if has_bootstrap or has_cmd:
+        return False
+
+    # Check GPR files for Library_Name or Library_Kind (Ada projects)
+    for gpr_file in project_root.glob("*.gpr"):
+        try:
+            content = gpr_file.read_text()
+            # Library_Name or Library_Kind in GPR indicates a library
+            if "Library_Name" in content or "Library_Kind" in content:
+                return True
+        except Exception:
+            pass
+
+    # Check project name as fallback
+    project_name = project_root.name.lower()
+    if "_lib_" in project_name or project_name.endswith("_lib"):
+        return True
+    if "_app_" in project_name or project_name.endswith("_app"):
+        return False
+
+    # Default to application
+    return False
+
+
+# ==============================================================================
+# Case Conversion Utilities
+# ==============================================================================
+
+def to_pascal_case(snake_case: str) -> str:
+    """
+    Convert snake_case to PascalCase.
+
+    Args:
+        snake_case: e.g., "my_awesome_app"
+
+    Returns:
+        PascalCase: e.g., "MyAwesomeApp"
+    """
+    return ''.join(word.capitalize() for word in snake_case.split('_'))
+
+
+def to_ada_pascal_case(snake_case: str) -> str:
+    """
+    Convert snake_case to Ada PascalCase (preserves underscores).
+
+    Args:
+        snake_case: e.g., "my_awesome_app"
+
+    Returns:
+        Ada PascalCase: e.g., "My_Awesome_App"
+    """
+    return '_'.join(word.capitalize() for word in snake_case.split('_'))
+
+
+def to_snake_case(name: str) -> str:
+    """
+    Convert various formats to snake_case.
+
+    Args:
+        name: e.g., "MyAwesomeApp" or "My_Awesome_App" or "my-awesome-app"
+
+    Returns:
+        snake_case: e.g., "my_awesome_app"
+    """
+    # Replace hyphens with underscores
+    name = name.replace('-', '_')
+
+    # Handle Ada Pascal_Case (already has underscores)
+    if '_' in name:
+        return name.lower()
+
+    # Handle PascalCase - insert underscore before uppercase letters
+    result = re.sub(r'([A-Z])', r'_\1', name)
+    return result.strip('_').lower()
+
+
+# ==============================================================================
+# Architecture Layer Constants
+# ==============================================================================
+
+# 4-layer architecture (libraries)
+LIBRARY_LAYERS = ['domain', 'application', 'infrastructure', 'api']
+
+# 5-layer architecture (applications)
+APP_LAYERS = ['domain', 'application', 'infrastructure', 'presentation', 'bootstrap']

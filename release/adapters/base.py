@@ -32,6 +32,10 @@ try:
 except ImportError:
     from models import Language
 
+# Add parent directory to path for common imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from common import detect_project_type as common_detect_project_type
+
 
 class BaseReleaseAdapter(ABC):
     """
@@ -1009,53 +1013,15 @@ class BaseReleaseAdapter(ABC):
         """
         Detect if project is a library (vs application).
 
+        Delegates to common.detect_project_type for implementation.
+
         Args:
             project_root: Path to project root
 
         Returns:
             True if library, False if application
         """
-        # Check for library indicators
-        # Go structure: api/, bootstrap/, cmd/ at root
-        # Ada structure: src/api/, src/bootstrap/, src/cmd/ under src/
-        api_dir = project_root / "api"
-        api_dir_ada = project_root / "src" / "api"
-        bootstrap_dir = project_root / "bootstrap"
-        bootstrap_dir_ada = project_root / "src" / "bootstrap"
-        cmd_dir = project_root / "cmd"
-        cmd_dir_ada = project_root / "src" / "cmd"
-
-        has_api = api_dir.exists() or api_dir_ada.exists()
-        has_bootstrap = bootstrap_dir.exists() or bootstrap_dir_ada.exists()
-        has_cmd = cmd_dir.exists() or cmd_dir_ada.exists()
-
-        # Libraries have api/ but not bootstrap/ or cmd/
-        if has_api and not has_bootstrap and not has_cmd:
-            return True
-
-        # Applications have bootstrap/ and/or cmd/
-        if has_bootstrap or has_cmd:
-            return False
-
-        # Check GPR files for Library_Name or Library_Kind (Ada projects)
-        for gpr_file in project_root.glob("*.gpr"):
-            try:
-                content = gpr_file.read_text()
-                # Library_Name or Library_Kind in GPR indicates a library
-                if "Library_Name" in content or "Library_Kind" in content:
-                    return True
-            except Exception:
-                pass
-
-        # Check project name as fallback
-        project_name = project_root.name.lower()
-        if "_lib_" in project_name or project_name.endswith("_lib"):
-            return True
-        if "_app_" in project_name or project_name.endswith("_app"):
-            return False
-
-        # Default to application
-        return False
+        return common_detect_project_type(project_root)
 
     def validate_ai_assistance_section(self, config) -> Tuple[bool, List[str]]:
         """

@@ -13,18 +13,16 @@
 # ==============================================================================
 
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 import re
 
-
-class Language(Enum):
-    """Supported template languages."""
-    GO = "go"
-    ADA = "ada"
-    RUST = "rust"
+# Import shared utilities from common
+try:
+    from ..common import Language, to_pascal_case, to_ada_pascal_case, to_snake_case
+except ImportError:
+    from common import Language, to_pascal_case, to_ada_pascal_case, to_snake_case
 
 
 @dataclass
@@ -174,49 +172,8 @@ class ProjectConfig:
         return self.new_name.upper()
 
 
-def to_pascal_case(snake_case: str) -> str:
-    """
-    Convert snake_case to PascalCase.
 
-    Args:
-        snake_case: e.g., "my_awesome_app"
-
-    Returns:
-        PascalCase: e.g., "MyAwesomeApp"
-    """
-    return ''.join(word.capitalize() for word in snake_case.split('_'))
-
-
-def to_ada_pascal_case(snake_case: str) -> str:
-    """
-    Convert snake_case to Ada PascalCase (preserves underscores).
-
-    Args:
-        snake_case: e.g., "my_awesome_app"
-
-    Returns:
-        Ada PascalCase: e.g., "My_Awesome_App"
-    """
-    return '_'.join(word.capitalize() for word in snake_case.split('_'))
-
-
-def to_snake_case(name: str) -> str:
-    """
-    Convert various formats to snake_case.
-
-    Args:
-        name: e.g., "MyAwesomeApp" or "My_Awesome_App" or "my-awesome-app"
-
-    Returns:
-        snake_case: e.g., "my_awesome_app"
-    """
-    # Replace hyphens with underscores
-    name = name.replace('-', '_')
-
-    # Handle Ada Pascal_Case (already has underscores)
-    if '_' in name:
-        return name.lower()
-
-    # Handle PascalCase - insert underscore before uppercase letters
-    result = re.sub(r'([A-Z])', r'_\1', name)
-    return result.strip('_').lower()
+# Case conversion functions imported from common.py:
+# - to_pascal_case
+# - to_ada_pascal_case
+# - to_snake_case

@@ -58,6 +58,10 @@ except ImportError:
     from models import ArchitectureViolation
     from adapters.base import LanguageAdapter
 
+# Add parent directory to path for common imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from common import detect_language as common_detect_language
+
 
 class ArchitectureGuard:
     """
@@ -416,26 +420,13 @@ def detect_language(project_root: Path) -> str | None:
     """
     Auto-detect project language based on configuration files.
 
+    Delegates to common.detect_language and converts to string.
+
     Returns:
         'go', 'ada', 'rust', or None if unknown
     """
-    # Check for Go
-    if (project_root / 'go.mod').exists() or (project_root / 'go.work').exists():
-        return 'go'
-
-    # Check for Ada (GPR files or alire.toml)
-    if (project_root / 'alire.toml').exists():
-        return 'ada'
-    if list(project_root.glob('*.gpr')):
-        return 'ada'
-    if (project_root / 'src').exists() and list((project_root / 'src').glob('**/*.gpr')):
-        return 'ada'
-
-    # Check for Rust
-    if (project_root / 'Cargo.toml').exists():
-        return 'rust'
-
-    return None
+    result = common_detect_language(project_root)
+    return result.value if result else None
 
 
 def get_adapter(language: str) -> LanguageAdapter:
@@ -451,7 +442,10 @@ def get_adapter(language: str) -> LanguageAdapter:
     Raises:
         ValueError: If language is not supported
     """
-    from .adapters import GoAdapter, AdaAdapter
+    try:
+        from .adapters import GoAdapter, AdaAdapter
+    except ImportError:
+        from adapters import GoAdapter, AdaAdapter
 
     adapters = {
         'go': GoAdapter,
