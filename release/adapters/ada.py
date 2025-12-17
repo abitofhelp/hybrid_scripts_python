@@ -888,15 +888,6 @@ end {ada_package}.Version;
 
         print("Running SPARK PROVE formal verification...")
         print("  (This may take 1-3 hours depending on project size...)")
-        print("")
-        print("  ┌─────────────────────────────────────────────────────────────┐")
-        print(f"  │ Monitor progress with:                                      │")
-        print(f"  │   watch -n 60 'tail -5 /tmp/spark_prove_v{config.version}.log'     │")
-        print("  │                                                             │")
-        print("  │ Or in another terminal:                                     │")
-        print(f"  │   tail -f /tmp/spark_prove_v{config.version}.log                   │")
-        print("  └─────────────────────────────────────────────────────────────┘")
-        print("")
 
         makefile = config.project_root / 'Makefile'
         if makefile.exists():
