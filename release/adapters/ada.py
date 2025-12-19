@@ -959,26 +959,8 @@ end {ada_package}.Version;
 
         print("Updating GitHub release with SPARK results...")
 
-        try:
-            # Get current release notes
-            result = subprocess.run(
-                ['gh', 'release', 'view', f'v{config.version}', '--json', 'body'],
-                cwd=config.project_root,
-                capture_output=True,
-                text=True
-            )
-
-            if result.returncode != 0:
-                print(f"  Could not fetch release notes: {result.stderr}")
-                return False
-
-            import json
-            release_data = json.loads(result.stdout)
-            current_body = release_data.get('body', '')
-
-            # Append SPARK verification section
-            spark_section = f"""
-
+        # Build SPARK section for release notes
+        spark_section = f"""
 ---
 
 ## SPARK Formal Verification
@@ -990,6 +972,31 @@ end {ada_package}.Version;
 | **Results** | {spark_summary} |
 
 Verified using SPARK Ada formal verification tools."""
+
+        def print_manual_instructions():
+            """Print copy/paste instructions on failure."""
+            print("  -" * 40)
+            print("  Copy/paste this section into GitHub release notes:")
+            print(spark_section)
+            print("  -" * 40)
+
+        try:
+            # Get current release notes
+            result = subprocess.run(
+                ['gh', 'release', 'view', f'v{config.version}', '--json', 'body'],
+                cwd=config.project_root,
+                capture_output=True,
+                text=True
+            )
+
+            if result.returncode != 0:
+                print(f"  ERROR: Could not fetch release notes: {result.stderr}")
+                print_manual_instructions()
+                return False
+
+            import json
+            release_data = json.loads(result.stdout)
+            current_body = release_data.get('body', '')
 
             new_body = current_body + spark_section
 
@@ -1003,7 +1010,8 @@ Verified using SPARK Ada formal verification tools."""
             )
 
             if result.returncode != 0:
-                print(f"  Could not update release: {result.stderr}")
+                print(f"  ERROR: Could not update release: {result.stderr}")
+                print_manual_instructions()
                 return False
 
             print("  GitHub release updated with SPARK results")
@@ -1028,7 +1036,8 @@ Verified using SPARK Ada formal verification tools."""
             return True
 
         except Exception as e:
-            print(f"  Error updating release: {e}")
+            print(f"  ERROR: Exception updating release: {e}")
+            print_manual_instructions()
             return False
 
     def update_spark_badges_in_readme(self, config, spark_summary: str) -> bool:
@@ -1121,10 +1130,12 @@ Verified using SPARK Ada formal verification tools."""
             version_pattern = rf'(## \[{re.escape(config.version)}\][^\n]*\n)'
             match = re.search(version_pattern, content)
 
+            # Build the formatted line for CHANGELOG
+            new_spark_line = f'**SPARK Status:** {spark_summary} (--mode=prove --level=2)'
+
             if match:
                 # Find SPARK Status line after version header
                 spark_pattern = r'(\*\*SPARK Status:\*\*)[^\n]*'
-                new_spark_line = f'**SPARK Status:** {spark_summary} (--mode=prove --level=2)'
 
                 if re.search(spark_pattern, content):
                     content = re.sub(spark_pattern, new_spark_line, content, count=1)
@@ -1132,10 +1143,18 @@ Verified using SPARK Ada formal verification tools."""
                     print(f"  Updated CHANGELOG.md SPARK Status")
                     return True
                 else:
-                    print("  CHANGELOG.md has no SPARK Status line to update")
-                    return True
+                    print("  ERROR: CHANGELOG.md missing '**SPARK Status:**' line in Technical Details")
+                    print("  -" * 40)
+                    print("  Copy/paste this line into CHANGELOG.md:")
+                    print(f"  - {new_spark_line}")
+                    print("  -" * 40)
+                    return False
 
-            print(f"  Version {config.version} section not found in CHANGELOG.md")
+            print(f"  ERROR: Version {config.version} section not found in CHANGELOG.md")
+            print("  -" * 40)
+            print("  Copy/paste this line into CHANGELOG.md:")
+            print(f"  - {new_spark_line}")
+            print("  -" * 40)
             return False
 
         except Exception as e:
