@@ -114,6 +114,27 @@ def detect_template_name(source_dir: Path, language: Language) -> str:
     return to_snake_case(source_dir.name)
 
 
+def detect_example_app_names(template_name: str, language: Language) -> list:
+    """
+    Detect the example application names for a template.
+
+    Application templates include sample applications (e.g., "greeter", "greet"
+    in hybrid_app_ada) that should be renamed to the new project name.
+    Library templates do not have example apps.
+
+    Args:
+        template_name: Name of the template (e.g., "hybrid_app_ada")
+        language: Detected language
+
+    Returns:
+        List of example app names (e.g., ["greeter", "greet"]) or empty list
+    """
+    if language == Language.ADA:
+        return AdaAdapter.get_example_app_names(template_name)
+    # Future: add GoAdapter.get_example_app_names, RustAdapter.get_example_app_names
+    return []
+
+
 def validate_generated_project(target_dir: Path, language: Language) -> Tuple[bool, List[str]]:
     """
     Validate the generated project structure.
@@ -236,6 +257,9 @@ def brand_project(config: ProjectConfig, verbose: bool = False) -> bool:
     print_info(f"Language: {config.language.value}")
     print_info(f"Old name: {config.old_name}")
     print_info(f"New name: {config.new_name}")
+    if config.example_app_names:
+        for app_name in config.example_app_names:
+            print_info(f"Example app: {app_name} -> {config.new_name}")
     print_info(f"New repo: {config.new_repo.https_url}")
     print()
 
@@ -449,6 +473,9 @@ The script will:
     # Detect template name
     old_name = detect_template_name(source_dir, language)
 
+    # Detect example app names (for application templates like hybrid_app_ada)
+    example_app_names = detect_example_app_names(old_name, language)
+
     # Determine target directory (output_dir / project_name)
     output_dir = args.output.resolve()
 
@@ -479,6 +506,7 @@ The script will:
         new_repo=new_repo,
         language=language,
         dry_run=args.dry_run,
+        example_app_names=example_app_names,
     )
 
     # Execute branding

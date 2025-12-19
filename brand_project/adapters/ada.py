@@ -32,7 +32,22 @@ class AdaAdapter(BaseAdapter):
         - .gpr project file updates
         - Ada source file (.ads, .adb) updates
         - Ada-specific naming conventions (Underscore_Pascal_Case)
+
+    Template Example App Names:
+        Application templates (hybrid_app_ada) include an example application
+        called "greeter" that needs to be renamed to the new project name.
+        Library templates (hybrid_lib_ada) do not have an example app.
     """
+
+    # Mapping of template names to their example application names
+    # Application templates have a sample app; library templates do not
+    # Each template can have multiple example names to replace:
+    #   - Main executable name (e.g., "greeter")
+    #   - Use case/command name (e.g., "greet" for Greet_Command, Application.Usecase.Greet)
+    TEMPLATE_EXAMPLE_APPS: dict = {
+        "hybrid_app_ada": ["greeter", "greet"],  # greeter=main, greet=use case
+        # "hybrid_lib_ada": [],  # Libraries don't have example apps
+    }
 
     ADA_EXCLUDED_DIRS: Set[str] = {
         'alire',
@@ -66,6 +81,9 @@ class AdaAdapter(BaseAdapter):
 
         Order matters - replace longer/more specific patterns first.
         Ada uses Underscore_Pascal_Case for packages (e.g., Hybrid_App_Ada).
+
+        For application templates, also replaces the example app name (e.g., greeter)
+        with the new project name.
         """
         pairs = []
 
@@ -76,6 +94,11 @@ class AdaAdapter(BaseAdapter):
             (config.old_name_upper, config.new_name_upper),            # HYBRID_APP_ADA
             (config.old_name, config.new_name),                        # hybrid_app_ada
         ])
+
+        # Example app name variations (for application templates like hybrid_app_ada)
+        # Replaces "greeter", "greet" -> new_name in all case variations
+        if config.example_app_names:
+            pairs.extend(config.get_example_app_replacement_pairs())
 
         return pairs
 
@@ -187,3 +210,21 @@ class AdaAdapter(BaseAdapter):
         if list(project_root.glob('**/*.ads')) or list(project_root.glob('**/*.adb')):
             return True
         return False
+
+    @classmethod
+    def get_example_app_names(cls, template_name: str) -> list:
+        """
+        Get the example application names for a template.
+
+        Application templates (hybrid_app_ada) include sample applications
+        (e.g., "greeter" for main, "greet" for use case/command) that should
+        be renamed to the new project name.
+        Library templates (hybrid_lib_ada) do not have example apps.
+
+        Args:
+            template_name: Name of the template (e.g., "hybrid_app_ada")
+
+        Returns:
+            List of example app names (e.g., ["greeter", "greet"]) or empty list
+        """
+        return cls.TEMPLATE_EXAMPLE_APPS.get(template_name, [])

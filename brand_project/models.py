@@ -12,9 +12,9 @@
 #
 # ==============================================================================
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 from urllib.parse import urlparse
 import re
 
@@ -128,6 +128,10 @@ class ProjectConfig:
         new_repo: Parsed git repository URL for new project
         language: Detected or specified language
         dry_run: If True, don't make changes, just report
+        example_app_names: List of example application names in template
+                          (e.g., ["greeter", "greet"] for hybrid_app_ada).
+                          Used for application templates that have a sample app.
+                          Empty list for library templates.
     """
     source_dir: Path
     target_dir: Path
@@ -135,6 +139,7 @@ class ProjectConfig:
     new_repo: GitRepoUrl
     language: Language
     dry_run: bool = False
+    example_app_names: List[str] = field(default_factory=list)
 
     @property
     def new_name(self) -> str:
@@ -171,6 +176,29 @@ class ProjectConfig:
         """New project name in UPPER_CASE."""
         return self.new_name.upper()
 
+    def get_example_app_replacement_pairs(self) -> List[tuple]:
+        """
+        Get replacement pairs for all example app names.
+
+        For each example app name, returns tuples for all case variations:
+        - Ada_Pascal_Case (e.g., Greeter -> New_Name)
+        - PascalCase (e.g., Greeter -> NewName)
+        - UPPER_CASE (e.g., GREETER -> NEW_NAME)
+        - snake_case (e.g., greeter -> new_name)
+
+        Returns:
+            List of (old_text, new_text) tuples
+        """
+        pairs = []
+        for app_name in self.example_app_names:
+            if app_name:
+                pairs.extend([
+                    (to_ada_pascal_case(app_name), self.new_name_ada_pascal),
+                    (to_pascal_case(app_name), self.new_name_pascal),
+                    (app_name.upper(), self.new_name_upper),
+                    (app_name, self.new_name),
+                ])
+        return pairs
 
 
 # Case conversion functions imported from common.py:

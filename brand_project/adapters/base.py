@@ -388,6 +388,15 @@ class BaseAdapter(ABC):
             config.old_name_ada_pascal,
         ]
 
+        # Also check for example app name references (for application templates)
+        if config.example_app_names:
+            for app_name in config.example_app_names:
+                if app_name:
+                    old_patterns.extend([
+                        app_name,
+                        app_name.title(),  # Simple pascal case
+                    ])
+
         for file_path in config.target_dir.rglob('*'):
             if file_path.is_dir():
                 continue
