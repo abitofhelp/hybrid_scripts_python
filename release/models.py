@@ -21,11 +21,15 @@
 #
 # ==============================================================================
 
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Optional
+
+# Add parent directory to path for common imports (before importing common)
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Import Language from common to avoid duplication
 try:
