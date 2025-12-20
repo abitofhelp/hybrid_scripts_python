@@ -373,6 +373,35 @@ def brand_project(config: ProjectConfig, verbose: bool = False) -> bool:
         else:
             print_info("[DRY RUN] Would configure xmlada dependency if present")
 
+    # Step 11: Update test dependencies (Ada projects only)
+    if config.language == Language.ADA:
+        print_section(f"\n{dry_run_prefix}Step 11: Updating test dependencies (gnatcov)...")
+        if not config.dry_run:
+            test_dir = config.target_dir / "test"
+            if test_dir.exists() and (test_dir / "alire.toml").exists():
+                try:
+                    result = subprocess.run(
+                        ["alr", "update"],
+                        cwd=str(test_dir),
+                        capture_output=True,
+                        text=True,
+                        timeout=300
+                    )
+                    if result.returncode == 0:
+                        print_success("Test dependencies updated (gnatcov_rts available)")
+                    else:
+                        print_warning(f"Could not update test dependencies: {result.stderr.strip()}")
+                except subprocess.TimeoutExpired:
+                    print_warning("alr update timed out - run manually: cd test && alr update")
+                except FileNotFoundError:
+                    print_warning("alr not found - install Alire and run: cd test && alr update")
+                except Exception as e:
+                    print_warning(f"Could not update test dependencies: {e}")
+            else:
+                print_warning("test/alire.toml not found - skipping")
+        else:
+            print_info("[DRY RUN] Would run: cd test && alr update")
+
     # Summary
     print_section("\n" + "=" * 70)
     if config.dry_run:
