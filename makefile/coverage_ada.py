@@ -54,6 +54,22 @@ class Config:
             "*-windows*",      # Windows adapter (requires Windows)
         ]
 
+    def discover_project_names(self) -> list[str]:
+        """
+        Discover GPR project names from src/ directory.
+
+        Returns project names (not paths) for use with --projects= flag.
+        This excludes external dependencies in alire/cache.
+        """
+        projects = []
+        src_dir = self.root / "src"
+        if src_dir.exists():
+            for gpr_file in src_dir.glob("**/*.gpr"):
+                # Extract project name from GPR file
+                # GPR project names are typically the stem of the filename
+                projects.append(gpr_file.stem.title().replace("_", ""))
+        return projects
+
 
 # =============================================================================
 # Utilities
@@ -192,16 +208,28 @@ def instrument_tests(cfg: Config, run_unit: bool, run_integration: bool) -> bool
 
     env = {"GPR_PROJECT_PATH": f"{cfg.gnatcov_rts_prefix}:{os.environ.get('GPR_PROJECT_PATH', '')}"}
 
+    # Discover project names to instrument (excludes external dependencies)
+    project_names = cfg.discover_project_names()
+    projects_args = []
+    for name in project_names:
+        projects_args.extend(["--projects", name])
+
+    if projects_args:
+        print(f"  Instrumenting projects: {', '.join(project_names)}")
+    else:
+        print("  Warning: No project GPRs found in src/, instrumenting all")
+
     if run_unit and cfg.unit_tests_gpr.exists():
         print("\n  Instrumenting unit tests...")
         try:
-            run_alr([
+            cmd = [
                 "gnatcov", "instrument",
                 "-P", str(cfg.unit_tests_gpr),
                 "--level=stmt+decision",
                 "--dump-trigger=atexit",
                 "--dump-channel=bin-file",
-            ], cwd=cfg.test_dir, env=env)
+            ] + projects_args
+            run_alr(cmd, cwd=cfg.test_dir, env=env)
         except subprocess.CalledProcessError:
             print("✗ Unit test instrumentation failed")
             return False
@@ -209,13 +237,14 @@ def instrument_tests(cfg: Config, run_unit: bool, run_integration: bool) -> bool
     if run_integration and cfg.integration_tests_gpr.exists():
         print("\n  Instrumenting integration tests...")
         try:
-            run_alr([
+            cmd = [
                 "gnatcov", "instrument",
                 "-P", str(cfg.integration_tests_gpr),
                 "--level=stmt+decision",
                 "--dump-trigger=atexit",
                 "--dump-channel=bin-file",
-            ], cwd=cfg.test_dir, env=env)
+            ] + projects_args
+            run_alr(cmd, cwd=cfg.test_dir, env=env)
         except subprocess.CalledProcessError:
             print("✗ Integration test instrumentation failed")
             return False
