@@ -54,20 +54,36 @@ class Config:
             "*-windows*",      # Windows adapter (requires Windows)
         ]
 
-    def discover_project_names(self) -> list[str]:
+    def discover_project_names_for_gpr(self, test_gpr: Path) -> list[str]:
         """
-        Discover GPR project names from src/ directory.
+        Discover GPR project names imported by a test GPR file.
 
-        Returns project names (not paths) for use with --projects= flag.
+        Parses the test GPR to find 'with' statements pointing to our src/
+        directory, returning only those project names for --projects= flag.
         This excludes external dependencies in alire/cache.
         """
+        import re
+
         projects = []
-        src_dir = self.root / "src"
-        if src_dir.exists():
-            for gpr_file in src_dir.glob("**/*.gpr"):
-                # Extract project name from GPR file
-                # GPR project names are typically the stem of the filename
-                projects.append(gpr_file.stem.title().replace("_", ""))
+        if not test_gpr.exists():
+            return projects
+
+        # Parse the test GPR file for 'with' statements
+        content = test_gpr.read_text()
+        # Match: with "../../src/domain/domain.gpr"; or with "../../adafmt_shared_config.gpr";
+        with_pattern = re.compile(r'with\s+"([^"]+\.gpr)"', re.IGNORECASE)
+
+        for match in with_pattern.finditer(content):
+            gpr_path = match.group(1)
+            # Only include projects from src/ directory (not shared_config, not alire deps)
+            if "/src/" in gpr_path or gpr_path.startswith("../../src/"):
+                # Extract project name from path
+                gpr_name = Path(gpr_path).stem
+                # Convert to GPR project name format (Title case, no underscores)
+                project_name = gpr_name.title().replace("_", "")
+                if project_name not in projects:
+                    projects.append(project_name)
+
         return projects
 
 
@@ -208,19 +224,17 @@ def instrument_tests(cfg: Config, run_unit: bool, run_integration: bool) -> bool
 
     env = {"GPR_PROJECT_PATH": f"{cfg.gnatcov_rts_prefix}:{os.environ.get('GPR_PROJECT_PATH', '')}"}
 
-    # Discover project names to instrument (excludes external dependencies)
-    project_names = cfg.discover_project_names()
-    projects_args = []
-    for name in project_names:
-        projects_args.extend(["--projects", name])
-
-    if projects_args:
-        print(f"  Instrumenting projects: {', '.join(project_names)}")
-    else:
-        print("  Warning: No project GPRs found in src/, instrumenting all")
-
     if run_unit and cfg.unit_tests_gpr.exists():
         print("\n  Instrumenting unit tests...")
+        # Discover projects imported by unit tests GPR
+        project_names = cfg.discover_project_names_for_gpr(cfg.unit_tests_gpr)
+        projects_args = []
+        for name in project_names:
+            projects_args.extend(["--projects", name])
+
+        if projects_args:
+            print(f"    Projects: {', '.join(project_names)}")
+
         try:
             cmd = [
                 "gnatcov", "instrument",
@@ -236,6 +250,15 @@ def instrument_tests(cfg: Config, run_unit: bool, run_integration: bool) -> bool
 
     if run_integration and cfg.integration_tests_gpr.exists():
         print("\n  Instrumenting integration tests...")
+        # Discover projects imported by integration tests GPR
+        project_names = cfg.discover_project_names_for_gpr(cfg.integration_tests_gpr)
+        projects_args = []
+        for name in project_names:
+            projects_args.extend(["--projects", name])
+
+        if projects_args:
+            print(f"    Projects: {', '.join(project_names)}")
+
         try:
             cmd = [
                 "gnatcov", "instrument",
