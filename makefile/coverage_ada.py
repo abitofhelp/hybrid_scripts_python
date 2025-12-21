@@ -224,6 +224,13 @@ def instrument_tests(cfg: Config, run_unit: bool, run_integration: bool) -> bool
 
     env = {"GPR_PROJECT_PATH": f"{cfg.gnatcov_rts_prefix}:{os.environ.get('GPR_PROJECT_PATH', '')}"}
 
+    # Common args to ignore external dependencies (avoids Ada 2022 parse errors)
+    # gnatcov may not support newer Ada features like 'Reduce in dependencies
+    ignore_args = [
+        "--ignore-source-files=*/alire/cache/*",
+        "--ignore-source-files=*/alire/builds/*",
+    ]
+
     if run_unit and cfg.unit_tests_gpr.exists():
         print("\n  Instrumenting unit tests...")
         # Discover projects imported by unit tests GPR
@@ -242,7 +249,7 @@ def instrument_tests(cfg: Config, run_unit: bool, run_integration: bool) -> bool
                 "--level=stmt+decision",
                 "--dump-trigger=atexit",
                 "--dump-channel=bin-file",
-            ] + projects_args
+            ] + ignore_args + projects_args
             run_alr(cmd, cwd=cfg.test_dir, env=env)
         except subprocess.CalledProcessError:
             print("✗ Unit test instrumentation failed")
@@ -266,7 +273,7 @@ def instrument_tests(cfg: Config, run_unit: bool, run_integration: bool) -> bool
                 "--level=stmt+decision",
                 "--dump-trigger=atexit",
                 "--dump-channel=bin-file",
-            ] + projects_args
+            ] + ignore_args + projects_args
             run_alr(cmd, cwd=cfg.test_dir, env=env)
         except subprocess.CalledProcessError:
             print("✗ Integration test instrumentation failed")
