@@ -297,7 +297,7 @@ def build_instrumented_tests(cfg: Config, run_unit: bool, run_integration: bool)
         print("\n  Building unit tests...")
         try:
             run_alr([
-                "gprbuild", "-f", "-p",
+                "gprbuild", "-f", "-p", "-j0",
                 "-P", str(cfg.unit_tests_gpr),
                 "--src-subdirs=gnatcov-instr",
                 "--implicit-with=gnatcov_rts_full.gpr",
@@ -310,7 +310,7 @@ def build_instrumented_tests(cfg: Config, run_unit: bool, run_integration: bool)
         print("\n  Building integration tests...")
         try:
             run_alr([
-                "gprbuild", "-f", "-p",
+                "gprbuild", "-f", "-p", "-j0",
                 "-P", str(cfg.integration_tests_gpr),
                 "--src-subdirs=gnatcov-instr",
                 "--implicit-with=gnatcov_rts_full.gpr",
