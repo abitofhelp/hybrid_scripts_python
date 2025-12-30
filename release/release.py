@@ -978,9 +978,9 @@ the appropriate release workflow.
         project_root = args.project_root.resolve()
     else:
         # Auto-detect: go up from script location to find project root
-        # scripts/python/release/release.py -> scripts/python/release -> scripts/python -> scripts -> project_root
+        # scripts/python/shared/release/release.py -> release -> shared -> python -> scripts -> project_root
         script_dir = Path(__file__).parent
-        project_root = script_dir.parent.parent.parent
+        project_root = script_dir.parent.parent.parent.parent
 
     if not project_root.exists():
         print_error(f"Project root does not exist: {project_root}")
