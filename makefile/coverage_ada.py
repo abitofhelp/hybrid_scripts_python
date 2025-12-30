@@ -384,8 +384,10 @@ def generate_reports(cfg: Config) -> bool:
     cfg.report_dir.mkdir(parents=True, exist_ok=True)
 
     # Collect SID files, excluding platform-specific code
+    # Search both obj/ (library projects like functional) and test/obj/
+    # (projects with separate test workspaces like clara)
     sid_list = cfg.coverage_dir / "sid.list"
-    all_sid_files = list(cfg.root.glob("obj/**/*.sid"))
+    all_sid_files = list(cfg.root.glob("obj/**/*.sid")) + list(cfg.root.glob("test/obj/**/*.sid"))
     sid_files = [f for f in all_sid_files if not should_exclude(f, cfg.exclude_patterns)]
     excluded_count = len(all_sid_files) - len(sid_files)
 
