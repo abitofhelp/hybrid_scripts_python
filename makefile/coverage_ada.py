@@ -41,8 +41,11 @@ class Config:
         self.test_dir = root / "test"  # Directory with alire.toml containing gnatcov
         self.unit_tests_gpr = root / "test" / "unit" / "unit_tests.gpr"
         self.integration_tests_gpr = root / "test" / "integration" / "integration_tests.gpr"
+        self.cli_gpr = root / "test" / "cli" / "cli.gpr"  # CLI (future adafmt)
         self.unit_runner = root / "test" / "bin" / "unit_runner"
         self.integration_runner = root / "test" / "bin" / "integration_runner"
+        self.cli_runner = root / "test" / "cli" / "bin" / "cli"  # CLI executable
+        self.cli_dir = root / "test" / "cli"  # CLI alire workspace
         self.coverage_dir = root / "coverage"
         self.traces_dir = self.coverage_dir / "traces"
         self.report_dir = self.coverage_dir / "report"
@@ -58,8 +61,8 @@ class Config:
         """
         Discover GPR project names imported by a test GPR file.
 
-        Parses the test GPR to find 'with' statements pointing to our src/
-        directory, returning only those project names for --projects= flag.
+        Parses the test GPR to find 'with' statements pointing to our source
+        projects, returning project names for --projects= flag.
         This excludes external dependencies in alire/cache.
         """
         import re
@@ -70,17 +73,25 @@ class Config:
 
         # Parse the test GPR file for 'with' statements
         content = test_gpr.read_text()
-        # Match: with "../../src/domain/domain.gpr"; or with "../../adafmt_shared_config.gpr";
+        # Match: with "../../src/domain/domain.gpr"; or with "../../astfmt_internal.gpr";
         with_pattern = re.compile(r'with\s+"([^"]+\.gpr)"', re.IGNORECASE)
 
         for match in with_pattern.finditer(content):
             gpr_path = match.group(1)
-            # Only include projects from src/ directory (not shared_config, not alire deps)
+            gpr_name = Path(gpr_path).stem.lower()
+
+            # Include projects from src/ directory
             if "/src/" in gpr_path or gpr_path.startswith("../../src/"):
-                # Extract project name from path
-                gpr_name = Path(gpr_path).stem
                 # Convert to GPR project name format (Title case, no underscores)
-                project_name = gpr_name.title().replace("_", "")
+                project_name = Path(gpr_path).stem.title().replace("_", "")
+                if project_name not in projects:
+                    projects.append(project_name)
+
+            # Include main library project (astfmt_internal, functional, etc.)
+            # These contain the actual source code to measure
+            elif gpr_name.endswith("_internal") or gpr_name in ("functional", "astfmt"):
+                # Convert: astfmt_internal -> AstfmtInternal
+                project_name = Path(gpr_path).stem.title().replace("_", "")
                 if project_name not in projects:
                     projects.append(project_name)
 
@@ -130,7 +141,8 @@ def run_alr(args: list[str], cwd: Path | None = None, env: dict | None = None,
 # =============================================================================
 
 def find_gnatcov_rts_source(root: Path) -> Path | None:
-    """Find the gnatcov_rts source in Alire dependencies."""
+    """Find the gnatcov_rts source in Alire dependencies or global releases."""
+    # Search in local cache directories
     search_paths = [
         root / "alire" / "cache" / "dependencies",
         root / "test" / "alire" / "cache" / "dependencies",
@@ -143,6 +155,16 @@ def find_gnatcov_rts_source(root: Path) -> Path | None:
                 rts_path = dep_dir / "share" / "gnatcoverage" / "gnatcov_rts"
                 if rts_path.exists():
                     return rts_path
+
+    # Search in global Alire releases (for binary crates like gnatcov)
+    global_releases = Path.home() / ".local" / "share" / "alire" / "releases"
+    if global_releases.exists():
+        for release_dir in global_releases.iterdir():
+            if release_dir.name.startswith("gnatcov_"):
+                rts_path = release_dir / "share" / "gnatcoverage" / "gnatcov_rts"
+                if rts_path.exists():
+                    return rts_path
+
     return None
 
 
@@ -384,10 +406,13 @@ def generate_reports(cfg: Config) -> bool:
     cfg.report_dir.mkdir(parents=True, exist_ok=True)
 
     # Collect SID files, excluding platform-specific code
-    # Search both obj/ (library projects like functional) and test/obj/
-    # (projects with separate test workspaces like clara)
+    # Search obj/ (library), test/obj/ (tests), and test/cli/obj/ (CLI)
     sid_list = cfg.coverage_dir / "sid.list"
-    all_sid_files = list(cfg.root.glob("obj/**/*.sid")) + list(cfg.root.glob("test/obj/**/*.sid"))
+    all_sid_files = (
+        list(cfg.root.glob("obj/**/*.sid")) +
+        list(cfg.root.glob("test/obj/**/*.sid")) +
+        list(cfg.root.glob("test/cli/obj/**/*.sid"))
+    )
     sid_files = [f for f in all_sid_files if not should_exclude(f, cfg.exclude_patterns)]
     excluded_count = len(all_sid_files) - len(sid_files)
 
@@ -480,11 +505,16 @@ def main() -> int:
         "--integration-only", action="store_true",
         help="Only run integration tests"
     )
+    parser.add_argument(
+        "--include-cli", action="store_true",
+        help="Include CLI in coverage (future adafmt)"
+    )
     args = parser.parse_args()
 
     # Determine which tests to run
     run_unit = not args.integration_only
     run_integration = not args.unit_only
+    run_cli = args.include_cli
 
     # Find project and configure
     root = find_project_root()
