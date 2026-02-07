@@ -82,16 +82,17 @@ class Config:
 
             # Include projects from src/ directory
             if "/src/" in gpr_path or gpr_path.startswith("../../src/"):
-                # Convert to GPR project name format (Title case, no underscores)
-                project_name = Path(gpr_path).stem.title().replace("_", "")
+                # Convert to GPR project name format (Title case, keep underscores)
+                # e.g., domain.gpr -> Domain, my_package.gpr -> My_Package
+                project_name = Path(gpr_path).stem.title()
                 if project_name not in projects:
                     projects.append(project_name)
 
             # Include main library project (astfmt_internal, functional, etc.)
             # These contain the actual source code to measure
             elif gpr_name.endswith("_internal") or gpr_name in ("functional", "astfmt"):
-                # Convert: astfmt_internal -> AstfmtInternal
-                project_name = Path(gpr_path).stem.title().replace("_", "")
+                # Convert: astfmt_internal -> Astfmt_Internal (keep underscores)
+                project_name = Path(gpr_path).stem.title()
                 if project_name not in projects:
                     projects.append(project_name)
 
