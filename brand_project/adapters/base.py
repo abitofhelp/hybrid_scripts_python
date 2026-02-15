@@ -51,9 +51,11 @@ class BaseAdapter(ABC):
 
     # Submodule paths to exclude during copy and create as empty mount points
     # These are relative paths from project root
+    # Note: scripts/python/ is a regular directory for project-specific scripts;
+    #       only scripts/python/shared/ is the submodule (hybrid_python_scripts)
     SUBMODULE_PATHS: Set[str] = {
-        'scripts/python',  # hybrid_python_scripts submodule
-        'test/python',     # hybrid_test_python submodule
+        'scripts/python/shared',  # hybrid_python_scripts submodule
+        'test/python',            # hybrid_test_python submodule
     }
 
     # Common file patterns to exclude

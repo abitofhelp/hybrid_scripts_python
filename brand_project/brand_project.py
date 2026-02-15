@@ -148,10 +148,10 @@ def validate_generated_project(target_dir: Path, language: Language) -> Tuple[bo
     """
     failures = []
 
-    # Check submodules
+    # Check submodules (must match actual paths in .gitmodules)
     submodules = [
         ("docs/common", "Shared documentation"),
-        ("scripts/python", "Python build/test scripts"),
+        ("scripts/python/shared", "Python build/test scripts"),
         ("test/python", "Python test utilities"),
     ]
     for submodule_path, description in submodules:
