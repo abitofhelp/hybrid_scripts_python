@@ -737,7 +737,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
             return True
 
         try:
-            # Step 1: git init
+            # Step 1: git init and set default branch to main
             result = subprocess.run(
                 ['git', 'init'],
                 cwd=config.target_dir,
@@ -747,8 +747,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
             if result.returncode != 0:
                 print_warning(f"git init failed: {result.stderr}")
                 return False
+
+            result = subprocess.run(
+                ['git', 'branch', '-M', 'main'],
+                cwd=config.target_dir,
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                print_warning(f"git branch -M main failed: {result.stderr}")
+                return False
+
             if verbose:
-                print_info("  Initialized git repository")
+                print_info("  Initialized git repository (branch: main)")
 
             # Step 2: Parse .gitmodules to get submodule info
             gitmodules_path = config.target_dir / '.gitmodules'
