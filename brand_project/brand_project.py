@@ -18,6 +18,7 @@
 # ==============================================================================
 
 import argparse
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -34,9 +35,11 @@ from common import (
 try:
     from .models import GitRepoUrl, ProjectConfig, Language, to_snake_case
     from .adapters import GoAdapter, AdaAdapter
+    from .hybrid_configure_alire_project import configure as hybrid_configure
 except ImportError:
     from models import GitRepoUrl, ProjectConfig, Language, to_snake_case
     from adapters import GoAdapter, AdaAdapter
+    from hybrid_configure_alire_project import configure as hybrid_configure
 
 
 def detect_language(source_dir: Path) -> Optional[Language]:
@@ -401,6 +404,44 @@ def brand_project(config: ProjectConfig, verbose: bool = False) -> bool:
                 print_warning("test/alire.toml not found - skipping")
         else:
             print_info("[DRY RUN] Would run: cd test && alr update")
+
+    # Step 12: Build project and restore hybrid config.gpr (Ada only)
+    if config.language == Language.ADA:
+        print_section(f"\n{dry_run_prefix}Step 12: Building project and restoring hybrid config.gpr...")
+        if not config.dry_run:
+            # 12a: Purge stale alire/ cache (contains old template crate name)
+            alire_dir = config.target_dir / "alire"
+            if alire_dir.exists():
+                shutil.rmtree(alire_dir)
+                if verbose:
+                    print_info("  Purged stale alire/ cache")
+
+            # 12b: Run alr build to create fresh cache and generate config
+            try:
+                result = subprocess.run(
+                    ["alr", "build"],
+                    cwd=str(config.target_dir),
+                    capture_output=True,
+                    text=True,
+                    timeout=300
+                )
+                if result.returncode == 0:
+                    print_success("Initial build succeeded")
+                else:
+                    print_warning(f"Initial build had issues: {result.stderr.strip()[:200]}")
+                    print_warning("Continuing with config restoration...")
+            except subprocess.TimeoutExpired:
+                print_warning("alr build timed out - continuing with config restoration...")
+            except FileNotFoundError:
+                print_warning("alr not found - skipping initial build")
+
+            # 12c: Restore hybrid config.gpr (Alire overwrites it on fresh builds)
+            if hybrid_configure(config.target_dir, verbose=verbose):
+                print_success("Hybrid config.gpr restored (metadata + External profile only)")
+            else:
+                print_warning("Could not restore hybrid config.gpr - manual fix may be needed")
+        else:
+            print_info("[DRY RUN] Would build project and restore hybrid config.gpr")
 
     # Summary
     print_section("\n" + "=" * 70)
