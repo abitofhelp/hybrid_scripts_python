@@ -19,6 +19,15 @@ Options:
 Output:
     coverage/report/index.html  - HTML coverage report
     coverage/summary.txt        - Text summary
+
+Project-Local Exclusions:
+    Place a .coverage_exclude file in the project root to exclude
+    vendored or third-party SID files from coverage reports.
+    One glob pattern per line; blank lines and #-comments are ignored.
+    Example:
+        # Vendored zlib_ada binding
+        zlib*.sid
+        zlib-thin*.sid
 """
 
 import argparse
@@ -51,11 +60,20 @@ class Config:
         self.report_dir = self.coverage_dir / "report"
         self.gnatcov_rts_prefix = root / "external" / "gnatcov_rts" / "install"
 
-        # Exclude patterns for platform-specific code not testable on desktop
+        # Exclude patterns for code not measurable on the current platform
         self.exclude_patterns = [
             "*-embedded*",     # Embedded I/O adapter (requires bare-metal target)
             "*-windows*",      # Windows adapter (requires Windows)
         ]
+
+        # Load project-local exclusions from .coverage_exclude if present.
+        # One glob pattern per line; blank lines and #-comments are ignored.
+        local_exclude = root / ".coverage_exclude"
+        if local_exclude.exists():
+            for line in local_exclude.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    self.exclude_patterns.append(line)
 
     def discover_project_names_for_gpr(self, test_gpr: Path) -> list[str]:
         """
@@ -121,13 +139,17 @@ def find_project_root() -> Path:
 
 
 def run_cmd(cmd: list[str], cwd: Path | None = None, env: dict | None = None,
-            check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
-    """Run a command with nice output."""
+            check: bool = True, capture: bool = False,
+            timeout: int | None = None) -> subprocess.CompletedProcess:
+    """Run a command with nice output.
+
+    Raises subprocess.TimeoutExpired if *timeout* seconds elapse.
+    """
     print(f"  → {' '.join(str(c) for c in cmd)}")
     merged_env = {**os.environ, **(env or {})}
     return subprocess.run(
         cmd, cwd=cwd, env=merged_env, check=check,
-        capture_output=capture, text=True,
+        capture_output=capture, text=True, timeout=timeout,
     )
 
 
@@ -268,7 +290,7 @@ def instrument_tests(cfg: Config, run_unit: bool, run_integration: bool) -> bool
                 "gnatcov", "instrument",
                 "-P", str(cfg.unit_tests_gpr),
                 "--level=stmt+decision",
-                "--dump-trigger=atexit",
+                "--dump-trigger=main-end",
                 "--dump-channel=bin-file",
             ] + common_args + projects_args
             run_alr(cmd, cwd=cfg.test_dir, env=env)
@@ -292,7 +314,7 @@ def instrument_tests(cfg: Config, run_unit: bool, run_integration: bool) -> bool
                 "gnatcov", "instrument",
                 "-P", str(cfg.integration_tests_gpr),
                 "--level=stmt+decision",
-                "--dump-trigger=atexit",
+                "--dump-trigger=main-end",
                 "--dump-channel=bin-file",
             ] + common_args + projects_args
             run_alr(cmd, cwd=cfg.test_dir, env=env)
@@ -360,19 +382,33 @@ def run_tests(cfg: Config, run_unit: bool, run_integration: bool) -> bool:
     cfg.traces_dir.mkdir(parents=True, exist_ok=True)
     env = {"GNATCOV_TRACE_FILE": str(cfg.traces_dir) + "/"}
 
+    # Timeout prevents a hung test runner from blocking the entire
+    # coverage pipeline.  Five minutes is generous for any test suite.
+    timeout_seconds = 300
+
     success = True
 
     if run_unit and cfg.unit_runner.exists():
         print("\n  Running unit tests...")
-        result = run_cmd([str(cfg.unit_runner)], env=env, check=False)
-        if result.returncode != 0:
-            print("  ⚠ Unit tests had failures (continuing for coverage)")
+        try:
+            result = run_cmd([str(cfg.unit_runner)], env=env, check=False,
+                             timeout=timeout_seconds)
+            if result.returncode != 0:
+                print("  ⚠ Unit tests had failures (continuing for coverage)")
+        except subprocess.TimeoutExpired:
+            print(f"  ⚠ Unit tests timed out after {timeout_seconds}s "
+                  "(continuing for coverage)")
 
     if run_integration and cfg.integration_runner.exists():
         print("\n  Running integration tests...")
-        result = run_cmd([str(cfg.integration_runner)], env=env, check=False)
-        if result.returncode != 0:
-            print("  ⚠ Integration tests had failures (continuing for coverage)")
+        try:
+            result = run_cmd([str(cfg.integration_runner)], env=env, check=False,
+                             timeout=timeout_seconds)
+            if result.returncode != 0:
+                print("  ⚠ Integration tests had failures (continuing for coverage)")
+        except subprocess.TimeoutExpired:
+            print(f"  ⚠ Integration tests timed out after {timeout_seconds}s "
+                  "(continuing for coverage)")
 
     # Check for trace files
     traces = list(cfg.traces_dir.glob("*.srctrace"))
