@@ -774,7 +774,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
                     print_info("  No submodules defined in .gitmodules")
                 return True
 
-            # Step 3: For each submodule, remove empty mount point and add submodule
+            # Step 3: Remove the template .gitmodules before adding submodules.
+            # The file was copied from the template and already has entries.
+            # If we leave it, 'git submodule add' fails with "already exists
+            # in .gitmodules" and the submodules never get proper gitlink
+            # entries in the index. Deleting it lets git recreate it cleanly.
+            gitmodules_path.unlink()
+            if verbose:
+                print_info("  Removed template .gitmodules (will be recreated)")
+
+            # Step 4: For each submodule, remove empty mount point and add submodule
             for path, url in submodules:
                 mount_point = config.target_dir / path
 
