@@ -109,7 +109,11 @@ class AdaAdapter(LanguageAdapter):
         return with_clauses
 
     def get_layer_from_import(self, import_path: str, project_root: Path) -> str | None:
-        """Determine which layer an Ada package belongs to based on naming convention."""
+        """Determine which layer an Ada package belongs to based on naming convention.
+
+        Handles both bare layer references (Domain.Error) and namespaced
+        references (Adafmt.Domain.Error, Astfmt.Infrastructure.Adapter).
+        """
         # Normalize to lowercase for comparison
         normalized = import_path.lower()
 
@@ -118,7 +122,11 @@ class AdaAdapter(LanguageAdapter):
 
         # Check each layer (longest match first to handle nested packages)
         for layer in sorted(layer_names, key=len, reverse=True):
+            # Bare: Domain.Error, Application.Port.Outbound
             if normalized.startswith(layer + '.') or normalized == layer:
+                return layer
+            # Namespaced: Adafmt.Domain.Error, Astfmt.Infrastructure.Adapter
+            if ('.' + layer + '.') in normalized or normalized.endswith('.' + layer):
                 return layer
 
         return None
@@ -194,8 +202,11 @@ class AdaAdapter(LanguageAdapter):
             valid = False
         elif interface_packages:
             # Check that no Domain.* packages are in the interface
+            # Handles both bare (Domain.Error) and namespaced (Adafmt.Domain.Error)
             domain_packages = [pkg for pkg in interface_packages
-                             if pkg.lower().startswith('domain.')]
+                             if pkg.lower().startswith('domain.')
+                             or '.domain.' in pkg.lower()
+                             or pkg.lower().endswith('.domain')]
             if domain_packages:
                 messages.append(f"  ❌ Application Library_Interface contains Domain packages!")
                 messages.append(f"     File: {app_gpr_path}")

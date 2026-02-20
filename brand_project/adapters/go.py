@@ -83,6 +83,13 @@ class GoAdapter(BaseAdapter):
             (config.old_name, config.new_name),                        # hybrid_app_go
         ])
 
+        # Makefile help banner prefix (e.g., "Hybrid Lib" -> "MyProject")
+        # Template banner uses space-separated title-cased words from first
+        # two segments of the template name (e.g., hybrid_lib_go -> "Hybrid Lib")
+        banner_parts = config.old_name.split('_')[:2]
+        old_banner_prefix = ' '.join(p.title() for p in banner_parts)
+        pairs.append((old_banner_prefix, config.new_name_ada_pascal))
+
         return pairs
 
     def _detect_module_path(self, source_dir: Path) -> str:

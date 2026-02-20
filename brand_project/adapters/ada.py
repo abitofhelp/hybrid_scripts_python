@@ -95,6 +95,13 @@ class AdaAdapter(BaseAdapter):
             (config.old_name, config.new_name),                        # hybrid_app_ada
         ])
 
+        # Makefile help banner prefix (e.g., "Hybrid Lib" -> "Astfmt")
+        # Template banner uses space-separated title-cased words from first
+        # two segments of the template name (e.g., hybrid_lib_ada -> "Hybrid Lib")
+        banner_parts = config.old_name.split('_')[:2]
+        old_banner_prefix = ' '.join(p.title() for p in banner_parts)
+        pairs.append((old_banner_prefix, config.new_name_ada_pascal))
+
         # Example app name variations (for application templates like hybrid_app_ada)
         # Replaces "greeter", "greet" -> new_name in all case variations
         if config.example_app_names:
