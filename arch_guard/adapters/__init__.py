@@ -6,6 +6,7 @@ Language-specific adapters for architecture validation.
 
 from .base import LanguageAdapter
 from .ada import AdaAdapter
+from .cpp import CppAdapter
 from .go import GoAdapter
 
-__all__ = ['LanguageAdapter', 'AdaAdapter', 'GoAdapter']
+__all__ = ['LanguageAdapter', 'AdaAdapter', 'CppAdapter', 'GoAdapter']

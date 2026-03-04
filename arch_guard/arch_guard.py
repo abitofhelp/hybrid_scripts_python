@@ -443,13 +443,14 @@ def get_adapter(language: str) -> LanguageAdapter:
         ValueError: If language is not supported
     """
     try:
-        from .adapters import GoAdapter, AdaAdapter
+        from .adapters import GoAdapter, AdaAdapter, CppAdapter
     except ImportError:
-        from adapters import GoAdapter, AdaAdapter
+        from adapters import GoAdapter, AdaAdapter, CppAdapter
 
     adapters = {
         'go': GoAdapter,
         'ada': AdaAdapter,
+        'cpp': CppAdapter,
         # 'rust': RustAdapter,  # Future
     }
 
@@ -467,7 +468,7 @@ def main() -> int:
     )
     parser.add_argument(
         '--language', '-l',
-        choices=['go', 'ada', 'rust'],
+        choices=['go', 'ada', 'cpp', 'rust'],
         help='Project language (auto-detected if not specified)'
     )
     parser.add_argument(

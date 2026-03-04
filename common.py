@@ -234,6 +234,7 @@ class Language(Enum):
     """Supported programming languages."""
     GO = 'go'
     ADA = 'ada'
+    CPP = 'cpp'
     RUST = 'rust'
 
 
@@ -254,12 +255,24 @@ def detect_language(project_root: Path) -> Optional[Language]:
     if (project_root / 'go.mod').exists() or (project_root / 'go.work').exists():
         return Language.GO
 
-    # Check for Ada (GPR files or alire.toml)
+    # Check for Ada or C++ (both use GPR files)
     if (project_root / 'alire.toml').exists():
         return Language.ADA
-    if list(project_root.glob('*.gpr')):
-        return Language.ADA
-    if (project_root / 'src').exists() and list((project_root / 'src').glob('**/*.gpr')):
+
+    gpr_files = list(project_root.glob('*.gpr'))
+    if not gpr_files and (project_root / 'src').exists():
+        gpr_files = list((project_root / 'src').glob('**/*.gpr'))
+
+    if gpr_files:
+        # Distinguish C++ from Ada by checking GPR language declarations
+        for gpr_file in gpr_files:
+            try:
+                content = gpr_file.read_text(encoding='utf-8')
+                if re.search(r'for\s+Languages\s+use\s*\(\s*"C\+\+"', content, re.IGNORECASE):
+                    return Language.CPP
+            except Exception:
+                pass
+        # No C++ declaration found — default to Ada
         return Language.ADA
 
     # Check for Rust
