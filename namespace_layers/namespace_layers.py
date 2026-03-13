@@ -48,7 +48,7 @@ LAYER_ADA_NAME: Dict[str, str] = {
 ADA_EXTENSIONS = {".ads", ".adb"}
 
 # Directories to skip during content transformation (submodules, artifacts)
-SKIP_DIRS = {"test/python", ".git", "obj", "bin", "lib", "alire", ".alire"}
+SKIP_DIRS = {"test/scripts/python/shared", ".git", "obj", "bin", "lib", "alire", ".alire"}
 
 
 # ============================================================================

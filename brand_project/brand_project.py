@@ -155,7 +155,7 @@ def validate_generated_project(target_dir: Path, language: Language) -> Tuple[bo
     submodules = [
         ("docs/common", "Shared documentation"),
         ("scripts/python/shared", "Python build/test scripts"),
-        ("test/python", "Python test utilities"),
+        ("test/scripts/python/shared", "Python test utilities"),
     ]
     for submodule_path, description in submodules:
         full_path = target_dir / submodule_path
@@ -167,7 +167,7 @@ def validate_generated_project(target_dir: Path, language: Language) -> Tuple[bo
 
     # Check required directories
     common_dirs = ["docs", "docs/common", "docs/diagrams", "docs/guides",
-                   "scripts/python", "test", "test/python"]
+                   "scripts/python", "test", "test/scripts/python/shared"]
     if language == Language.ADA:
         # Use detect_project_type to determine library vs application structure
         is_library = detect_project_type(target_dir)

@@ -52,10 +52,10 @@ class BaseAdapter(ABC):
     # Submodule paths to exclude during copy and create as empty mount points
     # These are relative paths from project root
     # Note: scripts/python/ is a regular directory for project-specific scripts;
-    #       only scripts/python/shared/ is the submodule (hybrid_python_scripts)
+    #       only scripts/python/shared/ is the submodule (hybrid_scripts_python)
     SUBMODULE_PATHS: Set[str] = {
-        'scripts/python/shared',  # hybrid_python_scripts submodule
-        'test/python',            # hybrid_test_python submodule
+        'scripts/python/shared',           # hybrid_scripts_python submodule
+        'test/scripts/python/shared',      # hybrid_test_python submodule
     }
 
     # Common file patterns to exclude
@@ -579,7 +579,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
                     source_quickstart, target_docs / 'quick_start.md', config, verbose
                 )
 
-            # 8. Create mount points for other submodules (scripts/python, test/python)
+            # 8. Create mount points for other submodules
             for submodule_path in self.SUBMODULE_PATHS:
                 mount_point = config.target_dir / submodule_path
                 mount_point.mkdir(parents=True, exist_ok=True)
