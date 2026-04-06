@@ -69,6 +69,7 @@ from common import (  # noqa: E402
     print_error,
     print_info,
     print_success,
+    print_warning,
 )
 
 # ---------------------------------------------------------------------------
@@ -119,6 +120,62 @@ def detect_container_cli(override: Optional[str] = None) -> str:
 
     print_error("No container CLI was found.  Install docker or nerdctl.")
     sys.exit(1)
+
+
+# ==============================================================================
+# Rootless Containerd — Linger Check (Linux only)
+# ==============================================================================
+
+def ensure_linger_enabled() -> None:
+    """On Linux, verify that loginctl linger is enabled for the current user.
+
+    Rootless containerd requires linger so the user's systemd session
+    persists across SSH connections.  Without it, a second terminal
+    cannot see containers started from the first.
+
+    If linger is not enabled, the function attempts to enable it via
+    ``sudo loginctl enable-linger``.  If that fails (e.g., no
+    passwordless sudo), a warning with the manual command is printed.
+    """
+    if not is_linux():
+        return
+
+    username = getpass.getuser()
+
+    # -- Check XDG_RUNTIME_DIR -------------------------------------------
+    xdg = os.environ.get("XDG_RUNTIME_DIR", "")
+    if not xdg:
+        expected = f"/run/user/{os.getuid()}"
+        print_warning(
+            f"XDG_RUNTIME_DIR is not set.  "
+            f"Add to your shell profile: "
+            f"export XDG_RUNTIME_DIR={expected}"
+        )
+
+    # -- Check linger ----------------------------------------------------
+    linger_file = Path(f"/var/lib/systemd/linger/{username}")
+
+    if linger_file.exists():
+        return
+
+    print_warning(
+        f"Rootless containerd requires linger.  "
+        f"Enabling for user '{username}'..."
+    )
+
+    try:
+        subprocess.run(
+            ["sudo", "loginctl", "enable-linger", username],
+            check=True,
+            timeout=30,
+        )
+        print_success(f"Linger enabled for user '{username}'.")
+    except (subprocess.CalledProcessError, FileNotFoundError,
+            subprocess.TimeoutExpired):
+        print_warning(
+            f"Could not enable linger automatically.  "
+            f"Run manually: sudo loginctl enable-linger {username}"
+        )
 
 
 # ==============================================================================
@@ -317,6 +374,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # -- Detect container CLI --------------------------------------------
     cli = detect_container_cli(args.cli)
+
+    # -- Ensure rootless containerd prerequisites (Linux) ----------------
+    if cli == "nerdctl":
+        ensure_linger_enabled()
 
     # -- Build image reference -------------------------------------------
     if args.local:
