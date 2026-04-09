@@ -316,8 +316,12 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    # Project root is two levels up from scripts/makefile/
-    project_root = Path(__file__).parent.parent.parent
+    # Find project root by walking upward to a directory containing Makefile + src/.
+    project_root = Path(__file__).resolve().parent
+    for _ in range(10):
+        if (project_root / "Makefile").is_file() and (project_root / "src").is_dir():
+            break
+        project_root = project_root.parent
 
     cleaner = TempFileCleaner(
         project_root, args.dry_run, args.verbose, args.aggressive
