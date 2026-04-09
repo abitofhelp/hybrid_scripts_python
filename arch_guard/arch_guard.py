@@ -85,16 +85,23 @@ class ArchitectureGuard:
     # No layer can depend on bootstrap (it's the outermost layer)
     FORBIDDEN_DEPENDENCY = 'bootstrap'
 
-    def __init__(self, project_root: Path, adapter: LanguageAdapter):
+    def __init__(self, project_root: Path, adapter: LanguageAdapter,
+                 allowed_imports: List[str] | None = None):
         """
         Initialize architecture guard.
 
         Args:
             project_root: Root directory of the project
             adapter: Language-specific adapter for parsing
+            allowed_imports: Optional list of package prefixes that are
+                permitted to cross layer boundaries without triggering
+                a violation. Use for external libraries whose public
+                facade uses a package name (e.g., "Foo.API") that
+                would otherwise be flagged as a lateral dependency.
         """
         self.project_root = project_root
         self.adapter = adapter
+        self.allowed_imports: List[str] = allowed_imports or []
         self.violations: List[ArchitectureViolation] = []
         self.config_valid = False
 
@@ -276,6 +283,10 @@ class ArchitectureGuard:
                     continue
 
             if current_layer == 'infrastructure' and dependency_layer == 'api':
+                # Check if the import is explicitly allowed via --allow-import.
+                if any(import_path.startswith(allowed)
+                       for allowed in self.allowed_imports):
+                    continue
                 self.violations.append(ArchitectureViolation(
                     file_path=str(file_path),
                     line_number=line_num,
@@ -476,6 +487,18 @@ def main() -> int:
         type=Path,
         help='Project root directory (default: auto-detect from script location)'
     )
+    parser.add_argument(
+        '--allow-import',
+        action='append',
+        default=[],
+        metavar='PACKAGE',
+        help='Allow a specific cross-layer import that would otherwise be '
+             'flagged as a violation. May be specified multiple times. '
+             'Use when a consumed library exposes its public facade through '
+             'a package name that triggers a false-positive layer check '
+             '(e.g., --allow-import "Astengine.API" when the external '
+             'library uses .API as its designed public entry point).'
+    )
 
     args = parser.parse_args()
 
@@ -513,7 +536,10 @@ def main() -> int:
         print(f"ERROR: {e}")
         return 2
 
-    guard = ArchitectureGuard(project_root, adapter)
+    guard = ArchitectureGuard(
+        project_root, adapter,
+        allowed_imports=args.allow_import
+    )
 
     if not guard.layers_present:
         print("No architecture layers to validate - exiting")
