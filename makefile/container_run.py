@@ -179,6 +179,37 @@ def ensure_linger_enabled() -> None:
 
 
 # ==============================================================================
+# Local Image Detection
+# ==============================================================================
+
+def _local_image_exists(cli: str, image: str) -> bool:
+    """Check whether a locally built image exists.
+
+    Uses ``<cli> image inspect`` which succeeds only if the image is
+    present in the local store.  This allows the launcher to prefer a
+    locally built image over the remote registry, supporting both local
+    development (build then run) and CI/CD (no local image, pull from
+    registry).
+
+    Args:
+        cli:   Container CLI name (docker, nerdctl, podman).
+        image: Bare image name (e.g., ``dev-container-ada``).
+
+    Returns:
+        True if the image exists locally, False otherwise.
+    """
+    try:
+        result = subprocess.run(
+            [cli, "image", "inspect", image],
+            capture_output=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+# ==============================================================================
 # Container Naming
 # ==============================================================================
 
@@ -380,7 +411,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         ensure_linger_enabled()
 
     # -- Build image reference -------------------------------------------
+    # Resolution order:
+    #   1. Explicit --local flag: use the bare image name.
+    #   2. Local image exists: prefer locally built image over registry.
+    #   3. Fall back to the full registry reference for CI/CD pulls.
     if args.local:
+        image_ref = args.image
+    elif _local_image_exists(cli, args.image):
         image_ref = args.image
     else:
         image_ref = f"{args.registry}/{args.image}:{args.tag}"
