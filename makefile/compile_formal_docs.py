@@ -23,7 +23,7 @@
 #   With explicit paths:
 #       python3 compile_formal_docs.py \
 #           --project-dir /path/to/project \
-#           --templates-dir /path/to/Shared_Docs/templates/formal
+#           --templates-dir /path/to/shared_docs/templates/formal
 #
 # Design Notes:
 #   The Typst formal docs use #import "core.typ" which requires core.typ
@@ -34,7 +34,7 @@
 #       docs/formal/ directory. The temporary directory is always cleaned up.
 #
 # See Also:
-#   /Users/mike/Shared_Docs/templates/formal/ - shared Typst templates
+#   /Users/mike/shared_docs/templates/formal/ - shared Typst templates
 #   docs/formal/ - project-specific formal document sources and PDFs
 # ==============================================================================
 
@@ -46,7 +46,7 @@ import tempfile
 from pathlib import Path
 
 # Default path to shared Typst templates.
-DEFAULT_TEMPLATES_DIR = Path.home() / "Shared_Docs" / "templates" / "formal"
+DEFAULT_TEMPLATES_DIR = Path.home() / "shared_docs" / "templates" / "formal"
 
 # Shared template files to copy into the build directory.
 SHARED_TEMPLATES = ["core.typ", "utility.typ"]
