@@ -39,9 +39,9 @@ REPOS = [
     "deps26",
     "functional",
     "hybrid_app_ada",
-    "hybrid_app_docs",
+    # "hybrid_app_docs",  # legacy: replaced by per-project Typst formal docs (Phase C, 2026-04-10)
     "hybrid_lib_ada",
-    "hybrid_lib_docs",
+    # "hybrid_lib_docs",  # legacy: replaced by per-project Typst formal docs (Phase C, 2026-04-10)
     "hybrid_scripts_python",
     "hybrid_test_python",
 ]
