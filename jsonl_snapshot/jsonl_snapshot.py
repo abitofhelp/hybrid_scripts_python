@@ -352,8 +352,16 @@ def _read_sidecar_raw_sha(backup_gz: Path) -> Optional[str]:
 # =============================================================================
 
 
-def _resolve_default_dest_dir(start: Optional[Path]) -> Path:
-    root = find_git_root(start)
+def _resolve_default_dest_dir() -> Path:
+    """Return ``<git-root>/backup/sessions/raw/`` for the caller's CWD.
+
+    Intentionally uses the current working directory, NOT the source
+    jsonl's parent directory. Session jsonls live in
+    ``~/.claude/projects/<proj>/`` which is never a git repo; the
+    destination should land in the repository the user is *currently
+    working in*, which is their CWD.
+    """
+    root = find_git_root()
     return root / DEFAULT_DEST_SUBPATH
 
 
@@ -465,7 +473,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"error: --source is not a file: {source}", file=sys.stderr)
                 return 2
             if effective_dest is None:
-                effective_dest = _resolve_default_dest_dir(source.parent)
+                effective_dest = _resolve_default_dest_dir()
             request = SnapshotRequest(
                 source=source,
                 dest_dir=effective_dest.expanduser().resolve(),
