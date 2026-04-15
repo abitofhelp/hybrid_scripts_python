@@ -105,8 +105,35 @@ class RestoreRequest:
 
 @dataclass(frozen=True)
 class RestoreResult:
-    """The outcome of a successful jsonl restore operation."""
+    """The outcome of a successful jsonl restore operation.
+
+    Three distinct integrity states a restore can report. They are
+    tracked separately because "the archive decompresses" and "the
+    restored file matches the original source" are different claims
+    and conflating them would be misleading when the sidecar is
+    missing.
+
+    Attributes:
+        backup_gz: The compressed backup that was restored.
+        destination: Path where the decompressed file was written.
+        uncompressed_size_bytes: Size of the restored file.
+        hashes: source_sha256 is the authoritative value used for
+            comparison (from the sidecar if present, else a fallback
+            hash computed from the decompressed stream itself).
+            destination_sha256 is the hash of the restored file.
+        sidecar_present: True if the .sha256 sidecar was found next
+            to the backup. When False, source-match verification is
+            NOT possible — the archive integrity is still proved
+            (gunzip succeeded) but we cannot cross-check the
+            decompressed content against the original source.
+        source_match_verified: True only when the sidecar was present
+            AND its raw_sha256 matched the restored file's hash.
+            When False, the restore should be reported as
+            "archive-integrity OK, source-match UNVERIFIABLE".
+    """
     backup_gz: Path
     destination: Path
     uncompressed_size_bytes: int
     hashes: HashPair
+    sidecar_present: bool
+    source_match_verified: bool

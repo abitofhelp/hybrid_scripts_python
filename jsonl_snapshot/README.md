@@ -66,6 +66,8 @@ matching `session_snapshot`.
 
 ## SHA-256 verification
 
+### At snapshot time
+
 Every snapshot does three hash computations:
 
 | Hash | What it verifies |
@@ -77,6 +79,39 @@ Every snapshot does three hash computations:
 Any mismatch between `raw_sha256` and the decompressed round-trip
 fails the snapshot: the corrupt `.gz` is removed and the script exits
 non-zero. There is no silent corruption path.
+
+### At restore time — two distinct claims
+
+Restore reports two verification claims **separately** because they
+are different guarantees and conflating them would be misleading:
+
+| Claim | What it means | When reported |
+|---|---|---|
+| **archive integrity** | The `.gz` gunzips cleanly to a consistent decompressed stream. | Always, unconditionally — if gunzip fails the restore aborts. |
+| **source-match** | The restored file's SHA-256 matches the `raw_sha256` captured from the original source at snapshot time. | ONLY when the companion `.sha256` sidecar is present and its value matches. |
+
+**If the sidecar is missing** (common in external-storage scenarios
+where the sidecar was not copied alongside the `.gz`), the restore
+still succeeds, but the CLI output shows:
+
+```
+archive integrity:   OK  (gunzip round-trip succeeded)
+source-match:        [WARNING] UNVERIFIABLE — sidecar .sha256 missing
+                     The archive decompresses cleanly, so the
+                     restored file is internally consistent with
+                     the compressed backup. However, without the
+                     sidecar we cannot prove the restored file
+                     matches the ORIGINAL source captured at
+                     snapshot time. Recover the sidecar from
+                     external storage if source-match matters.
+```
+
+The exit code is still `0` — the restored file is usable — but the
+output makes the unverifiable state visually prominent so you can
+decide whether to trust the content. The soft fallback exists
+because "I copied the `.gz` without its sidecar" is a real recovery
+scenario, and refusing to restore would be worse than restoring
+with a loud warning.
 
 ## Sidecar file
 

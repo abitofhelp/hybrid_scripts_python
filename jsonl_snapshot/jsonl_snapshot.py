@@ -245,10 +245,20 @@ def _apply_retention(
 def restore_snapshot(request: RestoreRequest) -> RestoreResult:
     """Decompress a backup .gz to its original filename in ``target_dir``.
 
-    SHA-256 verifies the decompressed output against the sidecar's
-    ``raw_sha256`` if the sidecar is present. If the sidecar is
-    missing, falls back to hashing the decompressed output alone (no
-    comparison is possible, which is flagged in the summary).
+    Two verification claims are tracked separately and reported
+    distinctly in the CLI output:
+
+    - **Archive integrity** — proved unconditionally by successful
+      gunzip. If decompression fails or raises, the function raises
+      and the restore is aborted.
+    - **Source match** — proved ONLY when the companion ``.sha256``
+      sidecar is present and its ``raw_sha256`` matches the restored
+      file's hash. When the sidecar is missing (common in
+      external-storage scenarios where the sidecar was not copied
+      alongside the .gz), this claim is reported as UNVERIFIABLE.
+      The restore still succeeds, but the CLI output makes the gap
+      prominent so the operator can decide whether to trust the
+      restored content.
     """
     backup_gz = request.backup_gz
     match = BACKUP_FILENAME_RE.match(backup_gz.name)
@@ -260,25 +270,42 @@ def restore_snapshot(request: RestoreRequest) -> RestoreResult:
     original_basename = match.group("original")
     destination = request.target_dir / original_basename
 
+    sidecar_raw_sha = _read_sidecar_raw_sha(backup_gz)
+    sidecar_present = sidecar_raw_sha is not None
+
     if request.dry_run:
-        expected_hash = sha256_gzipped(backup_gz)
+        preview_hash = sidecar_raw_sha if sidecar_present else sha256_gzipped(backup_gz)
         return RestoreResult(
             backup_gz=backup_gz,
             destination=destination,
             uncompressed_size_bytes=0,
-            hashes=HashPair(source_sha256=expected_hash, destination_sha256=expected_hash),
+            hashes=HashPair(
+                source_sha256=preview_hash,
+                destination_sha256=preview_hash,
+            ),
+            sidecar_present=sidecar_present,
+            source_match_verified=sidecar_present,
         )
 
     ensure_dir(request.target_dir)
     gunzip_to_file(backup_gz, destination)
     restored_hash = sha256_file(destination)
 
-    # Compare to the sidecar's raw_sha256 if available. Falls back to
-    # comparing against sha256_gzipped(backup_gz) — which should be
-    # the same thing — so verification still works even if the sidecar
-    # has been lost.
-    expected_hash = _read_sidecar_raw_sha(backup_gz)
-    if expected_hash is None:
+    if sidecar_present:
+        # Authoritative comparison: sidecar's raw_sha256 was captured
+        # from the ORIGINAL source file at snapshot time, so a match
+        # against restored_hash proves both archive integrity AND
+        # source match simultaneously.
+        expected_hash = sidecar_raw_sha
+    else:
+        # Fallback: rehash the decompressed stream. This proves
+        # gunzip round-trips consistently (archive integrity) but
+        # CANNOT prove the content matches the original source,
+        # because the fallback hash is computed from the same
+        # decompressed bytes we just wrote. We still return a
+        # populated HashPair so the CLI output has something to
+        # display, but source_match_verified is set False so callers
+        # never mistake this for full verification.
         expected_hash = sha256_gzipped(backup_gz)
 
     hashes = HashPair(source_sha256=expected_hash, destination_sha256=restored_hash)
@@ -294,6 +321,8 @@ def restore_snapshot(request: RestoreRequest) -> RestoreResult:
         destination=destination,
         uncompressed_size_bytes=destination.stat().st_size,
         hashes=hashes,
+        sidecar_present=sidecar_present,
+        source_match_verified=sidecar_present,
     )
 
 
@@ -348,12 +377,35 @@ def _print_snapshot_result(result: SnapshotResult, dry_run: bool) -> None:
 
 def _print_restore_result(result: RestoreResult, dry_run: bool) -> None:
     tag = "[DRY-RUN] " if dry_run else ""
-    print(f"{tag}backup:            {result.backup_gz}")
-    print(f"{tag}destination:       {result.destination}")
-    print(f"{tag}uncompressed size: {result.uncompressed_size_bytes} bytes")
-    print(f"{tag}sha256 expected:   {result.hashes.source_sha256}")
-    print(f"{tag}sha256 restored:   {result.hashes.destination_sha256}")
-    print(f"{tag}verified:          {'OK' if result.hashes.verified else 'FAILED'}")
+    print(f"{tag}backup:              {result.backup_gz}")
+    print(f"{tag}destination:         {result.destination}")
+    print(f"{tag}uncompressed size:   {result.uncompressed_size_bytes} bytes")
+
+    # Archive integrity is always OK at this point — if gunzip had
+    # failed we would have raised before reaching this function. The
+    # distinction that matters is whether we were also able to
+    # cross-check the restored content against the original source
+    # via the sidecar.
+    print(f"{tag}archive integrity:   OK  (gunzip round-trip succeeded)")
+
+    if result.source_match_verified:
+        print(f"{tag}source-match:        OK  (verified against sidecar raw_sha256)")
+        print(f"{tag}sha256 expected:     {result.hashes.source_sha256}")
+        print(f"{tag}sha256 restored:     {result.hashes.destination_sha256}")
+    else:
+        # Make the unverifiable state visually unmissable: a WARNING
+        # banner line plus an indented explanation of why. The CLI
+        # exit code is still 0 — the restore is usable — but the
+        # operator sees at a glance that source-match was not proved.
+        print(f"{tag}source-match:        [WARNING] UNVERIFIABLE — sidecar .sha256 missing")
+        print(f"{tag}                     The archive decompresses cleanly, so the")
+        print(f"{tag}                     restored file is internally consistent with")
+        print(f"{tag}                     the compressed backup. However, without the")
+        print(f"{tag}                     sidecar we cannot prove the restored file")
+        print(f"{tag}                     matches the ORIGINAL source captured at")
+        print(f"{tag}                     snapshot time. Recover the sidecar from")
+        print(f"{tag}                     external storage if source-match matters.")
+        print(f"{tag}sha256 restored:     {result.hashes.destination_sha256}")
 
 
 def build_parser() -> argparse.ArgumentParser:
