@@ -48,12 +48,24 @@ Given a consumer project git repository, the tool:
    alignment notes or PR review packages worth preserving, others
    are stale scratch that should just be dropped.
 
+8. **Surfaces non-zero-byte non-`.md` tracked files in `exports/`**
+   as **orphans** with a `[WARNING]` banner. **Orphans are
+   intentionally left untouched.** The tool never `git rm`s,
+   `git mv`s, or modifies them in any way. They typically are
+   large old `Claude_Code_Export .txt` transcripts from before
+   the `/export` regression, and their fate (keep as conversation
+   artifact? drop from HEAD? preserve in `backup/sessions/`?)
+   depends on content value only a human can judge. The operator
+   handles them after the tool runs.
+
 Optional mode:
 
 - **`--migrate-all-md`**: also `git mv` every candidate into
   `backup/sessions/` with a UTC-prefixed name derived from the
   candidate's first-commit timestamp. Use this when you want to
-  preserve everything and cherry-pick drops afterward.
+  preserve everything and cherry-pick drops afterward. **Note**:
+  this flag only affects candidates, not orphans — orphans remain
+  intentionally untouched regardless of flags.
 
 The tool **never commits**. All changes are left staged in the
 working tree so the operator can review and commit them as a
@@ -175,12 +187,15 @@ nothing to do; project already conforms.
 - **Does not touch the formal docs, disposition ledger, or any
   Ada/Go/C++ source code.** Migration scope is purely the
   operational directory layout and the submodule pointer.
-- **Does not migrate non-`.md` files from `exports/`**, even if
-  they have content. The candidate list only considers `.md`
-  extensions because that matches the kind of meaningful artifacts
-  the backup convention preserves. Other exports/ content
-  (`.txt` with non-zero bytes, binaries, etc.) stays in place and
-  will become untracked once `exports/` is in `.gitignore`.
+- **Does not touch orphans.** Non-zero-byte non-`.md` tracked files
+  under `exports/` are flagged as orphans and **intentionally left
+  in place**. The `--migrate-all-md` flag does NOT apply to them —
+  orphan handling is always a human decision because their
+  conversation value is something only an operator can judge. If
+  you want to drop them, run `git rm` manually. If you want to
+  preserve them as conversation artifacts, run `git mv` manually
+  into `backup/sessions/` with a UTC-prefixed name. The tool's
+  job is to tell you they exist, not to pick their fate.
 
 ## See also
 

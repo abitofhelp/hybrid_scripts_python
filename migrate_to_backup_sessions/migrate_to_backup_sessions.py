@@ -94,6 +94,17 @@ RAW_DIR_REL = BACKUP_DIR_REL / "raw"
 # Kept inline rather than in separate files so the entire tool stays a
 # single Python package with no external asset loading. The text is
 # project-agnostic and does not reference any specific project name.
+#
+# MAINTENANCE NOTE: these templates must stay aligned with the canonical
+# backup/sessions/ convention. If the astfmt pilot's
+# backup/sessions/README.md or the raw/.gitignore content evolves in a
+# way that should propagate to every consumer, update the embedded
+# strings below in the same PR that changes the canonical version,
+# then rerun this tool against each consumer project to refresh the
+# written files. Re-writes are idempotent for the directory + dotfiles,
+# but README content is written only when missing — to force a refresh
+# in an already-migrated project, delete the target file first and
+# rerun.
 
 
 BACKUP_SESSIONS_README = """\
@@ -502,15 +513,31 @@ def _print_plan(plan: MigrationPlan) -> None:
         )
         for o in plan.orphan_tracked_exports:
             print(f"  - {o.source.relative_to(plan.project_root)} ({o.size_bytes} bytes)")
+        print()
+        print("  *** HUMAN JUDGMENT REQUIRED — ORPHANS ARE INTENTIONALLY UNTOUCHED ***")
+        print()
         print(
             "  These files have real content but are NOT .md artifacts the"
         )
         print(
-            "  convention preserves (typically old Claude_Code_Export .txt"
+            "  backup/sessions/ convention preserves (typically old"
         )
         print(
-            "  transcripts). The tool will NOT touch them automatically."
+            "  Claude_Code_Export .txt transcripts from before the /export"
         )
+        print(
+            "  regression). The tool will NOT touch them — this is a"
+        )
+        print(
+            "  deliberate safety property, not an oversight. Their fate"
+        )
+        print(
+            "  depends on their conversation value, which only a human"
+        )
+        print(
+            "  operator can judge."
+        )
+        print()
         print(
             "  Adding exports/ to .gitignore does NOT untrack them; they"
         )
