@@ -28,5 +28,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   `Library_Standalone use "encapsulated"` will see `make check-arch`
   fail after bumping the `scripts/python/shared` submodule to this
   release. Fix in each consumer by flipping the root GPR to
-  `Library_Standalone use "standard"` and running `alr update` /
-  rebuild.
+  `Library_Standalone use "standard"` and picking up the new submodule
+  + dependencies:
+    - If consuming via git submodule: `git submodule update --remote`
+    - If consuming via Alire:          `alr update`
+    - Then rebuild.

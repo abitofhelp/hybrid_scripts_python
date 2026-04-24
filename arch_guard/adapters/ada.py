@@ -218,8 +218,19 @@ class AdaAdapter(LanguageAdapter):
             messages.append(f"  ❌ Could not read root GPR file: {exc}")
             return False, messages
 
+        #  Regex design (post-GPT code review):
+        #  - Detection uses ``\s+`` (not ``\b``) after ``use`` so we
+        #    don't match malformed ``useSomething`` forms.
+        #  - Standard/encapsulated matches require the line to end
+        #    cleanly: mandatory ``;`` followed only by optional
+        #    whitespace and an optional Ada line comment. Trailing
+        #    garbage after the semicolon does NOT match.
+        #  - All four regexes use MULTILINE so ``^`` / ``$`` bind to
+        #    line boundaries.
+        #  - IGNORECASE because Ada identifiers and keywords are
+        #    case-insensitive by language rule.
         has_any_standalone = re.search(
-            r'^\s*for\s+Library_Standalone\s+use\b',
+            r'^\s*for\s+Library_Standalone\s+use\s+',
             content,
             re.MULTILINE | re.IGNORECASE,
         )
@@ -232,19 +243,19 @@ class AdaAdapter(LanguageAdapter):
 
         #  This is a library root GPR. Apply the full rule set.
         has_standard = bool(re.search(
-            r'^\s*for\s+Library_Standalone\s+use\s+"standard"\s*;',
+            r'^\s*for\s+Library_Standalone\s+use\s+"standard"\s*;\s*(--.*)?$',
             content,
             re.MULTILINE | re.IGNORECASE,
         ))
         has_encapsulated = bool(re.search(
-            r'^\s*for\s+Library_Standalone\s+use\s+"encapsulated"\s*;',
+            r'^\s*for\s+Library_Standalone\s+use\s+"encapsulated"\s*;\s*(--.*)?$',
             content,
             re.MULTILINE | re.IGNORECASE,
         ))
         has_interface = bool(re.search(
-            r'for\s+Library_Interface\s+use\s*\(',
+            r'^\s*for\s+Library_Interface\s+use\s*\(',
             content,
-            re.IGNORECASE,
+            re.MULTILINE | re.IGNORECASE,
         ))
 
         valid = True
@@ -274,8 +285,8 @@ class AdaAdapter(LanguageAdapter):
                 '     Required: for Library_Interface use (...);'
             )
             messages.append(
-                "     WHY: defines the public API surface; "
-                "stand-alone mode alone is not sufficient"
+                "     WHY: defines the public API surface; without it, "
+                "internal packages may become externally visible"
             )
             valid = False
 

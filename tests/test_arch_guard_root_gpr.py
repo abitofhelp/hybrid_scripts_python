@@ -184,3 +184,109 @@ def test_validate_config_encapsulated_root_overrides_pass(tmp_path: Path) -> Non
     assert ok is False
     joined = "\n".join(messages)
     assert "encapsulated" in joined
+
+
+# ---------------------------------------------------------------------------
+# Regex robustness (GPT code-review fix)
+# ---------------------------------------------------------------------------
+#
+# The Library_Standalone match patterns must tolerate valid-Ada
+# whitespace variation and trailing line comments, but must reject
+# trailing garbage after the semicolon. These tests were added after
+# GPT flagged the earlier regexes as too strict/too loose in different
+# ways.
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'for Library_Standalone use "standard";',
+        'for Library_Standalone use "standard"; -- trailing Ada comment',
+        'for Library_Standalone    use   "standard";',
+        'for Library_Standalone use "standard"  ;',
+        '   for Library_Standalone use "standard";',
+        'for Library_Standalone use "standard"; -- another comment',
+    ],
+)
+def test_root_gpr_valid_standard_whitespace_and_comment_variants(
+    tmp_path: Path, line: str
+) -> None:
+    """Valid Ada formatting variants must still be accepted."""
+    (tmp_path / f"{tmp_path.name}.gpr").write_text(
+        "library project Variant is\n"
+        f"   {line}\n"
+        '   for Library_Interface use ("Variant");\n'
+        "end Variant;\n",
+        encoding="utf-8",
+    )
+    adapter = AdaAdapter()
+    ok, messages = adapter._validate_root_gpr(tmp_path)
+    assert ok is True, f"should accept: {line!r}\nmessages: {messages}"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'for Library_Standalone use "standard"; garbage',
+        'for Library_Standalone use "standard"; extra tokens here',
+    ],
+)
+def test_root_gpr_rejects_trailing_garbage(
+    tmp_path: Path, line: str
+) -> None:
+    """Trailing non-comment tokens after the semicolon must NOT satisfy
+    the "has_standard" check — the line is malformed."""
+    (tmp_path / f"{tmp_path.name}.gpr").write_text(
+        "library project Garbage is\n"
+        f"   {line}\n"
+        '   for Library_Interface use ("Garbage");\n'
+        "end Garbage;\n",
+        encoding="utf-8",
+    )
+    adapter = AdaAdapter()
+    ok, messages = adapter._validate_root_gpr(tmp_path)
+    #  The garbage line does NOT match has_standard, so validator sees
+    #  "library has Library_Standalone present but standard missing"
+    #  and fails.
+    assert ok is False
+    joined = "\n".join(messages)
+    assert "missing required" in joined.lower() or "standalone" in joined.lower()
+
+
+def test_root_gpr_library_interface_not_matched_in_comments(
+    tmp_path: Path,
+) -> None:
+    """Library_Interface in a commented-out line must NOT satisfy the
+    has_interface check (prevents commented history from silently
+    passing the rule)."""
+    (tmp_path / f"{tmp_path.name}.gpr").write_text(
+        "library project Commented is\n"
+        '   for Library_Standalone use "standard";\n'
+        '   -- for Library_Interface use ("Commented");\n'
+        "end Commented;\n",
+        encoding="utf-8",
+    )
+    adapter = AdaAdapter()
+    ok, messages = adapter._validate_root_gpr(tmp_path)
+    assert ok is False
+    joined = "\n".join(messages)
+    assert "missing required Library_Interface" in joined
+
+
+def test_root_gpr_detection_tighter_than_word_boundary(tmp_path: Path) -> None:
+    """Detection pattern requires whitespace after ``use`` — malformed
+    joins like ``useSomething`` don't falsely trigger the rule.
+    Without ``Library_Standalone use "..."`` at all, the GPR is treated
+    as non-library and the check is skipped (not failed)."""
+    (tmp_path / f"{tmp_path.name}.gpr").write_text(
+        "library project Malformed is\n"
+        "   for Library_Standalone useBogus;\n"
+        "end Malformed;\n",
+        encoding="utf-8",
+    )
+    adapter = AdaAdapter()
+    ok, messages = adapter._validate_root_gpr(tmp_path)
+    #  Malformed declaration should not be detected as a Library_Standalone
+    #  declaration; rule-set is skipped.
+    assert ok is True
+    assert any("skipped" in m for m in messages)
