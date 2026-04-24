@@ -1,0 +1,15 @@
+--  Fixture: invalid root library GPR — uses "encapsulated".
+--  Must FAIL arch_guard root-GPR validation with the canonical
+--  ROOT_GPR_ENCAPSULATED_ERROR message.
+
+library project Invalid_Root_Encapsulated is
+
+   for Library_Name    use "invalid_root_encapsulated";
+   for Library_Dir     use "lib";
+   for Library_Kind    use "static";
+   for Library_Standalone use "encapsulated";
+   for Library_Interface use
+     ("Invalid_Root_Encapsulated",
+      "Invalid_Root_Encapsulated.API");
+
+end Invalid_Root_Encapsulated;
