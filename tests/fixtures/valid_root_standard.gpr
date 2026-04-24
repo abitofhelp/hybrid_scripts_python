@@ -1,0 +1,15 @@
+--  Fixture: valid root library GPR.
+--  Library_Standalone = "standard" + Library_Interface present.
+--  Must PASS arch_guard root-GPR validation.
+
+library project Valid_Root_Standard is
+
+   for Library_Name    use "valid_root_standard";
+   for Library_Dir     use "lib";
+   for Library_Kind    use "static";
+   for Library_Standalone use "standard";
+   for Library_Interface use
+     ("Valid_Root_Standard",
+      "Valid_Root_Standard.API");
+
+end Valid_Root_Standard;

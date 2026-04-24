@@ -1,0 +1,14 @@
+--  Fixture: root GPR with Library_Standalone = "standard" but
+--  NO Library_Interface declaration. Must FAIL arch_guard
+--  root-GPR validation — enforces rule coupling (standard alone
+--  is not sufficient; Library_Interface must also be present).
+
+library project Invalid_Root_Standard_No_Interface is
+
+   for Library_Name    use "invalid_root_standard_no_interface";
+   for Library_Dir     use "lib";
+   for Library_Kind    use "static";
+   for Library_Standalone use "standard";
+   --  Deliberately omits Library_Interface.
+
+end Invalid_Root_Standard_No_Interface;

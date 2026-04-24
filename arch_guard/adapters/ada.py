@@ -6,7 +6,7 @@ Ada language adapter for architecture validation.
 
 import re
 from pathlib import Path
-from typing import List, Tuple, Set
+from typing import List, Optional, Tuple, Set
 
 from .base import LanguageAdapter
 
@@ -15,6 +15,61 @@ try:
     from ..models import ArchitectureViolation
 except ImportError:
     from models import ArchitectureViolation
+
+
+#  Canonical error message for Library_Standalone="encapsulated" on a
+#  root library GPR. Exported as a module-level constant so tests can
+#  assert against the exact string (treated as an API contract). Any
+#  wording change must be matched in tests/test_arch_guard_root_gpr.py.
+ROOT_GPR_ENCAPSULATED_ERROR = (
+    '❌ Root GPR {gpr}: Library_Standalone = "encapsulated"\n'
+    '\n'
+    'Required:\n'
+    '  Library_Standalone use "standard";\n'
+    '\n'
+    'Why:\n'
+    '  "encapsulated" bundles the Ada runtime (RTS), which can cause\n'
+    '  duplicate-runtime link failures when multiple encapsulated\n'
+    '  libraries are combined.\n'
+    '\n'
+    '  Ada toolchain ecosystems require:\n'
+    '    - Library_Standalone = "standard"\n'
+    '    - Library_Interface for public API enforcement\n'
+    '\n'
+    'See:\n'
+    '  project SDS § Library_Standalone design decision'
+)
+
+
+def find_root_gpr(project_root: Path) -> Optional[Path]:
+    """Locate the project's root library GPR.
+
+    Primary: ``<project_root>/<project_root.name>.gpr``.
+    Fallback: if the name-based lookup fails, use the first ``*.gpr``
+    at the project root (lexicographic) that isn't an obvious internal,
+    config, test, or shared helper. Returns ``None`` if no candidate
+    is found — callers should treat that as "not a library project" and
+    skip root-GPR validation.
+    """
+    primary = project_root / f"{project_root.name}.gpr"
+    if primary.exists():
+        return primary
+
+    #  Fallback: pick the first plausible library root GPR at the
+    #  project root. Skip common helper/config/test/spark siblings.
+    skip_suffixes = (
+        '_config.gpr',
+        '_internal.gpr',
+        '_shared_config.gpr',
+        '_spark.gpr',
+        '_tests.gpr',
+        '_test.gpr',
+    )
+    candidates = sorted(
+        p for p in project_root.glob('*.gpr')
+        if not p.name.endswith(skip_suffixes)
+    )
+    return candidates[0] if candidates else None
 
 
 class AdaAdapter(LanguageAdapter):
@@ -131,18 +186,133 @@ class AdaAdapter(LanguageAdapter):
 
         return None
 
+    def _validate_root_gpr(
+        self,
+        project_root: Path,
+    ) -> Tuple[bool, List[str]]:
+        """Validate the project's root library GPR.
+
+        Rules (apply only when the root GPR is a library — detected by
+        the presence of a ``Library_Standalone`` declaration):
+
+        - reject ``Library_Standalone use "encapsulated"`` — raises
+          :data:`ROOT_GPR_ENCAPSULATED_ERROR` on match.
+        - require ``Library_Standalone use "standard"``.
+        - require ``Library_Interface use (...)``.
+
+        Non-library root GPRs (no ``Library_Standalone`` declaration
+        present, e.g. binary application aggregates) are skipped.
+        """
+        messages: List[str] = []
+
+        gpr_path = find_root_gpr(project_root)
+        if gpr_path is None:
+            messages.append(
+                "  ✓ No root library GPR found - root validation skipped"
+            )
+            return True, messages
+
+        try:
+            content = gpr_path.read_text(encoding='utf-8')
+        except Exception as exc:
+            messages.append(f"  ❌ Could not read root GPR file: {exc}")
+            return False, messages
+
+        has_any_standalone = re.search(
+            r'^\s*for\s+Library_Standalone\s+use\b',
+            content,
+            re.MULTILINE | re.IGNORECASE,
+        )
+        if not has_any_standalone:
+            messages.append(
+                f"  ✓ Root GPR {gpr_path.name} has no Library_Standalone "
+                f"- not a library project, skipped"
+            )
+            return True, messages
+
+        #  This is a library root GPR. Apply the full rule set.
+        has_standard = bool(re.search(
+            r'^\s*for\s+Library_Standalone\s+use\s+"standard"\s*;',
+            content,
+            re.MULTILINE | re.IGNORECASE,
+        ))
+        has_encapsulated = bool(re.search(
+            r'^\s*for\s+Library_Standalone\s+use\s+"encapsulated"\s*;',
+            content,
+            re.MULTILINE | re.IGNORECASE,
+        ))
+        has_interface = bool(re.search(
+            r'for\s+Library_Interface\s+use\s*\(',
+            content,
+            re.IGNORECASE,
+        ))
+
+        valid = True
+
+        if has_encapsulated:
+            messages.append(
+                ROOT_GPR_ENCAPSULATED_ERROR.format(gpr=gpr_path.name)
+            )
+            valid = False
+
+        if not has_standard and not has_encapsulated:
+            messages.append(
+                f"  ❌ Root GPR {gpr_path.name}: missing required "
+                f"Library_Standalone declaration"
+            )
+            messages.append(
+                '     Required: for Library_Standalone use "standard";'
+            )
+            valid = False
+
+        if not has_interface:
+            messages.append(
+                f"  ❌ Root GPR {gpr_path.name}: missing required "
+                f"Library_Interface declaration"
+            )
+            messages.append(
+                '     Required: for Library_Interface use (...);'
+            )
+            messages.append(
+                "     WHY: defines the public API surface; "
+                "stand-alone mode alone is not sufficient"
+            )
+            valid = False
+
+        if valid:
+            messages.append(
+                f"  ✓ Root GPR {gpr_path.name} configuration valid:"
+            )
+            messages.append(
+                '     - Library_Standalone: "standard"'
+            )
+            messages.append(
+                "     - Library_Interface: present"
+            )
+
+        return valid, messages
+
     def validate_config(self, project_root: Path, layers_present: Set[str]) -> Tuple[bool, List[str]]:
         """
         Validate GPR configuration for Ada projects.
 
-        Checks that Application layer is configured as stand-alone library
-        with Library_Interface that excludes Domain packages.
+        Checks:
+        - Root library GPR uses ``Library_Standalone = "standard"`` (not
+          ``"encapsulated"``) and declares ``Library_Interface``.
+        - Application layer is configured as stand-alone library with
+          ``Library_Interface`` that excludes Domain packages.
         """
-        messages = []
+        messages: List[str] = []
+
+        #  Root-GPR check first — this applies to every Ada library
+        #  project regardless of layer layout. Non-library roots are
+        #  skipped inside _validate_root_gpr.
+        root_ok, root_msgs = self._validate_root_gpr(project_root)
+        messages.extend(root_msgs)
 
         if 'application' not in layers_present:
             messages.append("  ✓ No application layer - GPR validation skipped")
-            return True, messages
+            return root_ok, messages
 
         # Determine source root
         src_root = project_root / 'src' if (project_root / 'src').exists() else project_root
@@ -152,6 +322,10 @@ class AdaAdapter(LanguageAdapter):
             messages.append(f"  ❌ Application GPR file not found: {app_gpr_path}")
             messages.append("     Application layer must have application.gpr file")
             return False, messages
+
+        #  Track application-layer validity separately so the final
+        #  return combines root-GPR + application-GPR results.
+        app_valid = True
 
         has_standalone = False
         has_interface = False
@@ -184,22 +358,19 @@ class AdaAdapter(LanguageAdapter):
             messages.append(f"  ❌ Could not read Application GPR file: {e}")
             return False, messages
 
-        # Validation Results
-        valid = True
-
         if not has_standalone:
             messages.append(f"  ❌ Application layer GPR missing stand-alone library configuration")
             messages.append(f"     File: {app_gpr_path}")
             messages.append(f"     Required: for Library_Standalone use \"standard\";")
             messages.append(f"     WHY: Prevents transitive Domain exposure to Presentation layer")
-            valid = False
+            app_valid = False
 
         if not has_interface:
             messages.append(f"  ❌ Application layer GPR missing Library_Interface declaration")
             messages.append(f"     File: {app_gpr_path}")
             messages.append(f"     Required: for Library_Interface use (...);")
             messages.append(f"     WHY: Explicitly defines public API, preventing Domain package visibility")
-            valid = False
+            app_valid = False
         elif interface_packages:
             # Check that no Domain.* packages are in the interface
             # Handles both bare (Domain.Error) and namespaced (Adafmt.Domain.Error)
@@ -214,14 +385,15 @@ class AdaAdapter(LanguageAdapter):
                 for pkg in domain_packages:
                     messages.append(f"        - {pkg}")
                 messages.append(f"     WHY: Domain packages MUST NOT be exposed to Presentation layer")
-                valid = False
+                app_valid = False
             else:
                 messages.append(f"  ✓ Application GPR configuration valid:")
                 messages.append(f"     - Stand-alone library: enabled")
                 messages.append(f"     - Library_Interface: defined ({len(interface_packages)} packages)")
                 messages.append(f"     - Domain packages: correctly excluded")
 
-        return valid, messages
+        #  Final verdict combines root-GPR and Application-GPR checks.
+        return (root_ok and app_valid), messages
 
     def is_test_file(self, file_path: Path) -> bool:
         """Check if this is an Ada test file."""

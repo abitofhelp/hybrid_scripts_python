@@ -320,10 +320,14 @@ class NamespaceTransformer:
 
         if self.kind == "lib":
             txt = self._ns_library_interface(txt)
-            # Upgrade to encapsulated for the external-facing library
-            txt = txt.replace(
-                'for Library_Standalone use "standard"',
-                'for Library_Standalone use "encapsulated"')
+            #  Library_Standalone stays at "standard". Earlier versions of
+            #  this tool upgraded library roots to "encapsulated", which
+            #  bundles the Ada runtime and creates duplicate-RTS link
+            #  failures when multiple Ada SALs are composed. Public-API
+            #  enforcement is the job of Library_Interface (applied just
+            #  above), not Library_Standalone. See arch_guard Ada adapter
+            #  for the matching enforcement rule and the project SDS
+            #  "Library_Standalone design decision" section.
         # App aggregate has no Library_Interface
 
         if txt != orig:
