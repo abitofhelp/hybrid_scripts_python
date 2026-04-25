@@ -584,8 +584,8 @@ def _generate_annotated_report(
             return fmt, index if index.exists() else cfg.report_dir
         if "HTML report format support is not installed" in combined:
             print(
-                "  ⚠ Dynamic HTML support not installed in this gnatcov "
-                "build; falling back to xcov."
+                f"  ⚠ Dynamic HTML support not installed in this gnatcov "
+                f"build; falling back to xcov (output at {cfg.report_dir})."
             )
             continue
         # Other failure mode: dump the captured output and stop trying.
