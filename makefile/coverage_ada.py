@@ -32,10 +32,33 @@ Project-Local Exclusions:
 
 import argparse
 import os
+import shlex
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+
+def gprbuild_extra_args() -> list[str]:
+    """Return any extra `gprbuild` flags from the ``GPRBUILD_EXTRA_ARGS``
+    environment variable.
+
+    Consumers whose build requires per-project scenario flags (e.g.
+    ``-XGNATCOLL_ICONV_OPT=`` to disable iconv linking on glibc Linux)
+    can set this env var in their Makefile target without modifying the
+    shared script. The value is shell-tokenised via :func:`shlex.split`,
+    so multi-flag invocations like
+    ``GPRBUILD_EXTRA_ARGS="-XFOO=bar -XBAZ=qux"`` work as expected.
+
+    Applied to:
+        * Step 1 legacy ``gprbuild`` runtime path (kept for v22 fallback)
+        * Step 3 instrumented test ``gprbuild``
+    Not applied to:
+        * ``gnatcov setup`` (v26+; not a gprbuild invocation)
+        * ``gnatcov instrument``
+        * ``gnatcov coverage``
+    """
+    return shlex.split(os.environ.get("GPRBUILD_EXTRA_ARGS", ""))
 
 
 # =============================================================================
@@ -309,7 +332,7 @@ def _build_gnatcov_runtime_legacy(cfg: Config) -> bool:
         run_cmd([
             "gprbuild", "-P", str(gpr_file), "-p", "-j0",
             f"--relocate-build-tree={cfg.gnatcov_rts_prefix}/obj",
-        ], cwd=rts_source)
+        ] + gprbuild_extra_args(), cwd=rts_source)
     except subprocess.CalledProcessError:
         print("✗ gprbuild failed")
         return False
@@ -458,6 +481,8 @@ def build_instrumented_tests(cfg: Config, run_unit: bool, run_integration: bool)
     env = {"GPR_PROJECT_PATH": f"{cfg.gnatcov_rts_prefix}/share/gpr:{os.environ.get('GPR_PROJECT_PATH', '')}"}
     implicit_with = _gnatcov_rts_implicit_with(cfg.gnatcov_rts_prefix)
 
+    extra_args = gprbuild_extra_args()
+
     if run_unit and cfg.unit_tests_gpr.exists():
         print("\n  Building unit tests...")
         try:
@@ -466,7 +491,7 @@ def build_instrumented_tests(cfg: Config, run_unit: bool, run_integration: bool)
                 "-P", str(cfg.unit_tests_gpr),
                 "--src-subdirs=gnatcov-instr",
                 f"--implicit-with={implicit_with}",
-            ], cwd=cfg.test_dir, env=env)
+            ] + extra_args, cwd=cfg.test_dir, env=env)
         except subprocess.CalledProcessError:
             print("✗ Unit test build failed")
             return False
@@ -479,7 +504,7 @@ def build_instrumented_tests(cfg: Config, run_unit: bool, run_integration: bool)
                 "-P", str(cfg.integration_tests_gpr),
                 "--src-subdirs=gnatcov-instr",
                 f"--implicit-with={implicit_with}",
-            ], cwd=cfg.test_dir, env=env)
+            ] + extra_args, cwd=cfg.test_dir, env=env)
         except subprocess.CalledProcessError:
             print("✗ Integration test build failed")
             return False
