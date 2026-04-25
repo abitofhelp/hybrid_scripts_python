@@ -163,6 +163,38 @@ def run_alr(args: list[str], cwd: Path | None = None, env: dict | None = None,
 # Step 1: Build GNATcov Runtime
 # =============================================================================
 
+def gnatcov_major_version(cwd: Path) -> int | None:
+    """Return the major version of `gnatcov` resolved by Alire in ``cwd``.
+
+    GNATcov ≥ 26 replaced the legacy ``gprbuild + gprinstall`` runtime-setup
+    sequence with a single ``gnatcov setup --prefix=<path>`` command. This
+    helper parses the version so the runtime-build step can dispatch to the
+    correct path. Returns ``None`` if the version cannot be determined
+    (callers should treat that as "fall back to legacy path").
+    """
+    import re
+
+    try:
+        proc = subprocess.run(
+            ["alr", "exec", "--", "gnatcov", "--version"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+    output = (proc.stdout or "") + (proc.stderr or "")
+    # Typical output: "GNATcoverage 26.2.1 (xxxxx) ..." — match leading
+    # major.minor.patch on the first non-empty line that mentions a version.
+    match = re.search(r"\b(\d+)\.\d+(?:\.\d+)?\b", output)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
 def find_gnatcov_rts_source(root: Path) -> Path | None:
     """Find the gnatcov_rts source in Alire dependencies or global releases."""
     # Search in local cache directories
@@ -191,18 +223,67 @@ def find_gnatcov_rts_source(root: Path) -> Path | None:
     return None
 
 
-def build_gnatcov_runtime(cfg: Config, force: bool = False) -> bool:
-    """Build and install the GNATcov runtime library."""
-    print("\n" + "=" * 70)
-    print("Step 1: GNATcov Runtime")
-    print("=" * 70)
+def _gnatcov_rts_implicit_with(prefix: Path) -> str:
+    """Return the runtime GPR name suitable for ``--implicit-with``.
 
-    # Check if already built
-    if not force and (cfg.gnatcov_rts_prefix / "share" / "gpr").exists():
-        print(f"✓ Runtime already installed at {cfg.gnatcov_rts_prefix}")
-        return True
+    GNATcov v22 ships both ``gnatcov_rts.gpr`` and ``gnatcov_rts_full.gpr``;
+    consumers historically used ``_full`` because it bundles richer trace I/O.
+    GNATcov v26 ships only ``gnatcov_rts.gpr``. This helper picks ``_full``
+    when present (preserving v22 behavior) and falls back to the plain GPR
+    otherwise (v26).
+    """
+    if (prefix / "share" / "gpr" / "gnatcov_rts_full.gpr").is_file():
+        return "gnatcov_rts_full.gpr"
+    return "gnatcov_rts.gpr"
 
-    # Find source
+
+def _gnatcov_rts_gpr_installed(prefix: Path) -> bool:
+    """Return True iff the post-install layout contains share/gpr/gnatcov_rts.gpr.
+
+    The legacy v22 path produced share/gpr/ with the project file inside; the
+    v26 ``gnatcov setup`` command produces the same layout. Both paths are
+    validated against this property, so a successful Step 1 always leaves the
+    runtime project loadable via ``GPR_PROJECT_PATH=<prefix>/share/gpr``.
+    """
+    return (prefix / "share" / "gpr" / "gnatcov_rts.gpr").is_file()
+
+
+def _build_gnatcov_runtime_v26(cfg: Config) -> bool:
+    """v26+ path: single ``gnatcov setup --prefix=<path>`` invocation.
+
+    GNATcov 26 replaced the legacy ``gprbuild + gprinstall`` runtime-setup
+    sequence with this single command. ``gnatcov setup`` finds the runtime
+    sources itself (they ship inside the gnatcov binary release), so the
+    explicit ``find_gnatcov_rts_source`` step is not used on this path.
+    """
+    print(f"  v26 path: gnatcov setup --prefix={cfg.gnatcov_rts_prefix}")
+    try:
+        run_alr(
+            ["gnatcov", "setup", f"--prefix={cfg.gnatcov_rts_prefix}"],
+            cwd=cfg.test_dir,
+        )
+    except subprocess.CalledProcessError:
+        print("✗ gnatcov setup failed")
+        return False
+
+    if not _gnatcov_rts_gpr_installed(cfg.gnatcov_rts_prefix):
+        print(
+            f"✗ gnatcov setup completed but "
+            f"{cfg.gnatcov_rts_prefix}/share/gpr/gnatcov_rts.gpr is missing"
+        )
+        return False
+
+    print(f"✓ GNATcov runtime installed (v26 path) at {cfg.gnatcov_rts_prefix}")
+    return True
+
+
+def _build_gnatcov_runtime_legacy(cfg: Config) -> bool:
+    """v22 fallback path: gprbuild + gprinstall against gnatcov_rts source.
+
+    Kept for older toolchains and offline environments where ``gnatcov 22``
+    is the only resolvable version. Identical to the original
+    ``build_gnatcov_runtime`` body.
+    """
     rts_source = find_gnatcov_rts_source(cfg.root)
     if rts_source is None:
         print("✗ Cannot find gnatcov_rts in Alire dependencies.")
@@ -210,12 +291,9 @@ def build_gnatcov_runtime(cfg: Config, force: bool = False) -> bool:
         print("  Then run: cd test && alr update")
         return False
 
+    print(f"  v22 legacy path:")
     print(f"  Building from: {rts_source}")
     print(f"  Installing to: {cfg.gnatcov_rts_prefix}")
-
-    # Clean if forcing rebuild
-    if force and cfg.gnatcov_rts_prefix.exists():
-        shutil.rmtree(cfg.gnatcov_rts_prefix)
 
     cfg.gnatcov_rts_prefix.mkdir(parents=True, exist_ok=True)
 
@@ -227,7 +305,6 @@ def build_gnatcov_runtime(cfg: Config, force: bool = False) -> bool:
         print(f"✗ Cannot find gnatcov_rts GPR file in {rts_source}")
         return False
 
-    # Build
     try:
         run_cmd([
             "gprbuild", "-P", str(gpr_file), "-p", "-j0",
@@ -237,7 +314,6 @@ def build_gnatcov_runtime(cfg: Config, force: bool = False) -> bool:
         print("✗ gprbuild failed")
         return False
 
-    # Install
     try:
         run_cmd([
             "gprinstall", "-P", str(gpr_file), "-p",
@@ -249,8 +325,51 @@ def build_gnatcov_runtime(cfg: Config, force: bool = False) -> bool:
         print("✗ gprinstall failed")
         return False
 
-    print("✓ GNATcov runtime installed")
+    if not _gnatcov_rts_gpr_installed(cfg.gnatcov_rts_prefix):
+        print(
+            f"✗ gprinstall completed but "
+            f"{cfg.gnatcov_rts_prefix}/share/gpr/gnatcov_rts.gpr is missing"
+        )
+        return False
+
+    print(f"✓ GNATcov runtime installed (v22 legacy path) at {cfg.gnatcov_rts_prefix}")
     return True
+
+
+def build_gnatcov_runtime(cfg: Config, force: bool = False) -> bool:
+    """Build and install the GNATcov runtime library.
+
+    Dispatches by gnatcov major version:
+
+    * v26+ — ``gnatcov setup --prefix=<cfg.gnatcov_rts_prefix>``
+    * v22  — legacy ``gprbuild + gprinstall`` against the runtime source
+
+    Both paths are validated against the same post-install property
+    (``<prefix>/share/gpr/gnatcov_rts.gpr`` exists) so the rest of
+    ``coverage_ada.py`` does not need to know which path produced the
+    install.
+    """
+    print("\n" + "=" * 70)
+    print("Step 1: GNATcov Runtime")
+    print("=" * 70)
+
+    # Idempotency: already built
+    if not force and _gnatcov_rts_gpr_installed(cfg.gnatcov_rts_prefix):
+        print(f"✓ Runtime already installed at {cfg.gnatcov_rts_prefix}")
+        return True
+
+    # Clean if forcing rebuild
+    if force and cfg.gnatcov_rts_prefix.exists():
+        shutil.rmtree(cfg.gnatcov_rts_prefix)
+
+    major = gnatcov_major_version(cfg.test_dir)
+    if major is None:
+        print("⚠ Could not determine gnatcov major version; using legacy path.")
+        return _build_gnatcov_runtime_legacy(cfg)
+
+    if major >= 26:
+        return _build_gnatcov_runtime_v26(cfg)
+    return _build_gnatcov_runtime_legacy(cfg)
 
 
 # =============================================================================
@@ -267,7 +386,7 @@ def instrument_tests(cfg: Config, run_unit: bool, run_integration: bool) -> bool
     for instr_dir in cfg.root.glob("**/gnatcov-instr"):
         shutil.rmtree(instr_dir, ignore_errors=True)
 
-    env = {"GPR_PROJECT_PATH": f"{cfg.gnatcov_rts_prefix}:{os.environ.get('GPR_PROJECT_PATH', '')}"}
+    env = {"GPR_PROJECT_PATH": f"{cfg.gnatcov_rts_prefix}/share/gpr:{os.environ.get('GPR_PROJECT_PATH', '')}"}
 
     # Use --no-subprojects to avoid parsing transitive dependencies
     # gnatcov may not support newer Ada features like 'Reduce in external deps
@@ -336,7 +455,8 @@ def build_instrumented_tests(cfg: Config, run_unit: bool, run_integration: bool)
     print("Step 3: Build Instrumented Tests")
     print("=" * 70)
 
-    env = {"GPR_PROJECT_PATH": f"{cfg.gnatcov_rts_prefix}:{os.environ.get('GPR_PROJECT_PATH', '')}"}
+    env = {"GPR_PROJECT_PATH": f"{cfg.gnatcov_rts_prefix}/share/gpr:{os.environ.get('GPR_PROJECT_PATH', '')}"}
+    implicit_with = _gnatcov_rts_implicit_with(cfg.gnatcov_rts_prefix)
 
     if run_unit and cfg.unit_tests_gpr.exists():
         print("\n  Building unit tests...")
@@ -345,7 +465,7 @@ def build_instrumented_tests(cfg: Config, run_unit: bool, run_integration: bool)
                 "gprbuild", "-f", "-p", "-j0",
                 "-P", str(cfg.unit_tests_gpr),
                 "--src-subdirs=gnatcov-instr",
-                "--implicit-with=gnatcov_rts_full.gpr",
+                f"--implicit-with={implicit_with}",
             ], cwd=cfg.test_dir, env=env)
         except subprocess.CalledProcessError:
             print("✗ Unit test build failed")
@@ -358,7 +478,7 @@ def build_instrumented_tests(cfg: Config, run_unit: bool, run_integration: bool)
                 "gprbuild", "-f", "-p", "-j0",
                 "-P", str(cfg.integration_tests_gpr),
                 "--src-subdirs=gnatcov-instr",
-                "--implicit-with=gnatcov_rts_full.gpr",
+                f"--implicit-with={implicit_with}",
             ], cwd=cfg.test_dir, env=env)
         except subprocess.CalledProcessError:
             print("✗ Integration test build failed")
@@ -434,6 +554,46 @@ def should_exclude(filepath: Path, patterns: list[str]) -> bool:
     return False
 
 
+def _generate_annotated_report(
+    cfg: Config, sid_list: Path, trace_list: Path
+) -> tuple[str | None, Path | None]:
+    """Generate the annotated report; prefer HTML, fall back to xcov.
+
+    Returns ``(format, index_path)`` on success or ``(None, None)`` if both
+    formats fail. On HTML success ``index_path`` points at ``index.html``;
+    on xcov fallback there is no index file so ``index_path`` is the report
+    directory itself.
+    """
+    for fmt in ("html", "xcov"):
+        result = run_alr(
+            [
+                "gnatcov", "coverage",
+                "--level=stmt+decision",
+                "--sid", f"@{sid_list}",
+                f"--annotate={fmt}",
+                "--output-dir", str(cfg.report_dir),
+                f"@{trace_list}",
+            ],
+            cwd=cfg.test_dir,
+            check=False,
+            capture=True,
+        )
+        combined = (result.stdout or "") + (result.stderr or "")
+        if result.returncode == 0:
+            index = cfg.report_dir / ("index.html" if fmt == "html" else "stats")
+            return fmt, index if index.exists() else cfg.report_dir
+        if "HTML report format support is not installed" in combined:
+            print(
+                "  ⚠ Dynamic HTML support not installed in this gnatcov "
+                "build; falling back to xcov."
+            )
+            continue
+        # Other failure mode: dump the captured output and stop trying.
+        sys.stderr.write(combined)
+        return None, None
+    return None, None
+
+
 def generate_reports(cfg: Config) -> bool:
     """Generate coverage reports from trace files."""
     print("\n" + "=" * 70)
@@ -472,20 +632,19 @@ def generate_reports(cfg: Config) -> bool:
             f.write(f"{trace}\n")
     print(f"  Found {len(trace_files)} trace file(s)")
 
-    # Generate HTML report
-    print("\n  Generating HTML report...")
-    try:
-        run_alr([
-            "gnatcov", "coverage",
-            "--level=stmt+decision",
-            "--sid", f"@{sid_list}",
-            "--annotate=html",
-            "--output-dir", str(cfg.report_dir),
-            f"@{trace_list}",
-        ], cwd=cfg.test_dir)
-    except subprocess.CalledProcessError:
-        print("✗ HTML report generation failed")
+    # Generate annotated report. Prefer HTML; fall back to xcov when the
+    # gnatcov binary distribution lacks HTML support (gnatcov 26.x binary
+    # builds do not ship Dynamic HTML — only source-built gnatcov includes
+    # it). The xcov format is plain-text per-file annotation and is always
+    # available; reports remain machine- and human-readable either way.
+    print("\n  Generating annotated report...")
+    annotate_format, report_index = _generate_annotated_report(
+        cfg, sid_list, trace_list,
+    )
+    if annotate_format is None:
+        print("✗ Annotated report generation failed")
         return False
+    print(f"  Format: {annotate_format}")
 
     # Generate text summary
     summary_file = cfg.coverage_dir / "summary.txt"
@@ -506,7 +665,9 @@ def generate_reports(cfg: Config) -> bool:
     print("\n" + "=" * 70)
     print("✓ Coverage Analysis Complete!")
     print("=" * 70)
-    print(f"\n  HTML Report: {cfg.report_dir / 'index.html'}")
+    if report_index is not None:
+        label = "HTML Report" if annotate_format == "html" else "Annotated Report"
+        print(f"\n  {label}: {report_index}")
     print(f"  Summary:     {summary_file}")
 
     # Print summary excerpt
