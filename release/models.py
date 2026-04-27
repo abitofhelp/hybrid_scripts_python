@@ -58,11 +58,33 @@ class ReleaseConfig:
     year: int = 0
     project_name: str = ""
     project_url: str = ""
+    applies_to_range: str = ""
 
     def __post_init__(self):
         """Initialize computed fields."""
         self.date_str = datetime.now().strftime("%Y-%m-%d")
         self.year = datetime.now().year
+        self.applies_to_range = self._compute_applies_to_range()
+
+    def _compute_applies_to_range(self) -> str:
+        """
+        Compute the alire-style version range for the document metadata
+        ``Applies to`` field.
+
+        Format: ``^{major}.{minor}`` (e.g., 1.0.0 -> ^1.0, 4.1.7 -> ^4.1).
+
+        Used by the release-time metadata sync to populate the
+        ``Applies to <project>`` row when the doc has no explicit
+        author override. Doc-author overrides are preserved by the
+        header rewriter and never replaced by this value.
+        """
+        # Strip any pre-release / build suffix (1.0.0-rc1 -> 1.0.0)
+        core = self.version.split('-')[0].split('+')[0]
+        parts = core.split('.')
+        if len(parts) >= 2:
+            return f"^{parts[0]}.{parts[1]}"
+        # Defensive fallback: malformed version -> "^0.0"
+        return "^0.0"
 
     @property
     def is_prerelease(self) -> bool:
