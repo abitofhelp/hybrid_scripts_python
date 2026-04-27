@@ -449,15 +449,19 @@ class BaseAdapter(ABC):
         # Get current date in ISO format (YYYY-MM-DD)
         today = date.today().strftime("%Y-%m-%d")
 
-        # Create fresh changelog content
+        # Create fresh changelog content (v2 metadata convention).
+        # Defaults for a newly branded project: pre-1.0 project version,
+        # ^0.1 compat range, doc starts in Draft.
+        project_name = config.new_name
         changelog_content = f"""# Changelog
 
-**Version:** Unreleased<br>
-**Date:** {today}<br>
+**Doc Version:** 0.1.0<br>
+**Applies to {project_name}:** ^0.1<br>
+**Last Updated:** {today}<br>
 **SPDX-License-Identifier:** BSD-3-Clause<br>
 **License File:** See the LICENSE file in the project root<br>
 **Copyright:** © 2025 Michael Gardner, A Bit of Help, Inc.<br>
-**Status:** Development
+**Status:** Draft
 
 All notable changes to this project will be documented in this file.
 

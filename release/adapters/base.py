@@ -270,25 +270,124 @@ class BaseReleaseAdapter(ABC):
             print(f"Command exception: {' '.join(cmd)}: {e}")
             return None
 
+    # ------------------------------------------------------------------
+    # Document metadata convention — release-time sync
+    # ------------------------------------------------------------------
+    #
+    # Lenient detection / strict emission, per adafmt#23:
+    #   * Detection accepts both the legacy form (**Version:**, **Date:**)
+    #     and the v2 convention (**Doc Version:**, **Applies to <project>:**,
+    #     **Last Updated:**), plus an SPDX fallback for license-only headers.
+    #   * Emission always writes the v2 convention.
+    #
+    # Field ownership:
+    #   * Doc Version       — doc-author-owned. Parsed and preserved across
+    #                          release runs. On migration from legacy
+    #                          (**Version:** present, no **Doc Version:**),
+    #                          reset to ``config.version`` once.
+    #   * Applies to        — release-process-owned by default
+    #                          (``config.applies_to_range``). Author overrides
+    #                          are preserved when they use a NON-caret form
+    #                          (``~1.4.0``, ``=1.0.0``, ``>=2.0,<3.0``, etc.) —
+    #                          those signal an intentional narrow range
+    #                          (migration / deprecated / experimental docs).
+    #                          Caret forms (``^X.Y``) are treated as stale
+    #                          auto-form output from prior releases and
+    #                          overwritten with the current release range.
+    #   * Last Updated      — release-process-owned. Always overwritten with
+    #                          ``config.date_str``. Semantics: "last
+    #                          release-touch", NOT "last human edit".
+
+    # Lenient detection: matches both legacy and v2 cover-page headers.
+    _METADATA_DETECTION_RE = re.compile(
+        r'^\*\*\s*(?:Doc\s+)?Version\s*:'      # **Version:** OR **Doc Version:**
+        r'|^\*\*\s*(?:Date|Last\s+Updated)\s*:'  # **Date:** OR **Last Updated:**
+        r'|^\*\*\s*Applies\s+to'                 # **Applies to ...:**
+        r'|SPDX-License-Identifier',             # license-only header fallback
+        re.MULTILINE | re.IGNORECASE,
+    )
+
+    # Header-start anchor. Accepts both legacy and v2 first-line forms.
+    # MULTILINE so ``.search()`` on full-file content matches at any line start.
+    _HEADER_START_RE = re.compile(
+        r'^\*\*(?:Doc\s+)?Version:', re.IGNORECASE | re.MULTILINE
+    )
+
+    # Per-field extraction inside an existing header block (v2 form only).
+    # Legacy ``**Version:**`` is detected by ``_HEADER_START_RE`` for
+    # block-boundary purposes, but its value is intentionally NOT
+    # preserved as Doc Version (see ``replace_markdown_header``).
+    _DOC_VERSION_RE = re.compile(
+        r'^\*\*Doc\s+Version:\*\*\s*(\S+?)\s*(?:<br>)?\s*$',
+        re.IGNORECASE,
+    )
+    _APPLIES_TO_RE = re.compile(
+        r'^\*\*Applies\s+to\b[^:]*:\*\*\s*(\S+?)\s*(?:<br>)?\s*$',
+        re.IGNORECASE,
+    )
+
+    # Files / paths to exclude from release-time metadata sync (per
+    # adafmt#23 GPT-recommended scope narrowing).
+    _EXCLUDED_FILENAMES = frozenset({
+        "CHANGELOG.md",
+        "CHANGELOG",
+        "LICENSE.md",
+        "LICENSE",
+    })
+    _EXCLUDED_DIR_PARTS = frozenset({
+        "third_party",   # vendored third-party content
+        "generated",     # build-tool output
+        "vendor",        # Go / Rust / Ruby vendored deps
+        "node_modules",  # JS / TS dependency directory
+        "dist",          # bundled distribution output
+        "build",         # generic build output
+    })
+
+    @classmethod
+    def _is_in_metadata_scope(cls, path: Path, project_root: Path) -> bool:
+        """
+        Decide whether ``path`` is a candidate for release-time metadata sync.
+
+        Excludes:
+            * CHANGELOG.md / LICENSE.md / LICENSE (per-release content or
+              boilerplate; never carries a doc cover-page header)
+            * any file under ``third_party/``, ``generated/``, ``vendor/``,
+              ``node_modules/``, ``dist/``, or ``build/`` (vendored content
+              and build output across language ecosystems)
+            * any file under a ``common/`` submodule path
+        """
+        if path.name in cls._EXCLUDED_FILENAMES:
+            return False
+        try:
+            rel = path.relative_to(project_root)
+        except ValueError:
+            return True  # outside the root; default to allowed
+        for part in rel.parts[:-1]:
+            if part in cls._EXCLUDED_DIR_PARTS or part == "common":
+                return False
+        return True
+
     def find_markdown_files(self, project_root: Path) -> List[Path]:
-        """Find all markdown files with version headers."""
+        """Find all markdown files carrying a metadata cover-page header.
+
+        Detection is lenient (accepts both legacy and v2 conventions);
+        scope is narrowed per adafmt#23 (excludes CHANGELOG.md, LICENSE.md,
+        third_party/**, generated/**, common/**).
+        """
         md_files = []
 
-        # Search in docs and root (exclude docs/common submodule)
+        # Search in docs and root (scope-narrowing applied below).
         for pattern in ["docs/**/*.md", "*.md"]:
             for f in project_root.glob(pattern):
-                if "/common/" not in str(f):
+                if self._is_in_metadata_scope(f, project_root):
                     md_files.append(f)
 
-        # Filter to only files with version headers
+        # Filter to only files whose content carries a cover-page header.
         versioned_files = []
         for md_file in md_files:
             try:
                 content = md_file.read_text(encoding='utf-8')
-                if re.search(
-                    r'Version\s*[:)]|version\s*[:)]|\*\*Version\s+\d+\.\d+|Copyright\s*©\s*\d{4}',
-                    content, re.IGNORECASE
-                ):
+                if self._METADATA_DETECTION_RE.search(content):
                     versioned_files.append(md_file)
             except Exception:
                 pass
@@ -297,49 +396,94 @@ class BaseReleaseAdapter(ABC):
 
     def replace_markdown_header(self, file_path: Path, config) -> bool:
         """
-        Replace markdown metadata header with canonical format.
+        Replace markdown metadata header with the v2 canonical format.
 
-        Finds the header block (Version through Status lines) and replaces
-        it entirely with a freshly generated canonical header.
+        Finds the existing header block (Version/Doc Version through Status
+        lines) and replaces it with a freshly generated v2 canonical header.
+
+        Field preservation rules (per adafmt#23):
+            * Doc Version is parsed from the existing header (v2 form first,
+              legacy ``**Version:**`` as fallback) and written back unchanged.
+              On migration from a legacy header that has no Doc Version
+              concept, this resets Doc Version to ``config.version`` once.
+            * Applies to is parsed from the existing header. If an explicit
+              author override exists, it is preserved. Otherwise it is set
+              to ``config.applies_to_range``.
+            * Last Updated, SPDX, License File, Copyright, Status are
+              always overwritten with release-process-owned values.
         """
         try:
             content = file_path.read_text(encoding='utf-8')
             lines = content.split('\n')
 
-            # Find header block boundaries
+            # Find header block boundaries (lenient: accepts both legacy
+            # **Version:** and v2 **Doc Version:** as the start anchor).
             header_start = None
             header_end = None
 
             for i, line in enumerate(lines):
-                # Header starts at first **Version:** line
-                if header_start is None and re.match(r'^\*\*Version:', line):
+                if header_start is None and self._HEADER_START_RE.match(line):
                     header_start = i
-                # Header ends after **Status:** line
                 elif header_start is not None and re.match(r'^\*\*Status:', line):
                     header_end = i + 1
                     break
 
             if header_start is None or header_end is None:
-                return False  # No valid header block found
+                return False  # No valid header block found.
 
-            # Generate canonical header
+            # Parse preserved fields from the existing block.
+            #
+            # Doc Version preservation:
+            #   * Only the v2 ``**Doc Version:**`` form is preserved.
+            #   * Legacy ``**Version:**`` (where the value was the library
+            #     version, not the doc version) is intentionally NOT
+            #     preserved — the convention v2 reset on migration
+            #     establishes a clean Doc Version starting point at
+            #     ``config.version``.
+            existing_block = lines[header_start:header_end]
+            preserved_doc_version = None
+            preserved_applies_to = None
+
+            for line in existing_block:
+                if preserved_doc_version is None:
+                    m = self._DOC_VERSION_RE.match(line)
+                    if m:
+                        preserved_doc_version = m.group(1)
+                        continue
+                if preserved_applies_to is None:
+                    m = self._APPLIES_TO_RE.match(line)
+                    if m:
+                        preserved_applies_to = m.group(1)
+
+            # Apply preservation rules with config defaults.
+            doc_version = preserved_doc_version or config.version
+            # Applies to: preserve only NON-caret forms (author overrides).
+            # Caret forms are treated as stale auto-form output and overwritten.
+            if preserved_applies_to and not preserved_applies_to.startswith("^"):
+                applies_to = preserved_applies_to
+            else:
+                applies_to = config.applies_to_range
+
+            # Generate v2 canonical header.
             status = "Unreleased" if config.is_prerelease else "Released"
+            project_label = config.project_name or "project"
             header_lines = [
-                f"**Version:** {config.version}<br>",
-                f"**Date:** {config.date_str}<br>",
+                f"**Doc Version:** {doc_version}<br>",
+                f"**Applies to {project_label}:** {applies_to}<br>",
+                f"**Last Updated:** {config.date_str}<br>",
                 "**SPDX-License-Identifier:** BSD-3-Clause<br>",
                 "**License File:** See the LICENSE file in the project root<br>",
                 f"**Copyright:** © {config.year} Michael Gardner, A Bit of Help, Inc.<br>",
                 f"**Status:** {status}",
             ]
 
-            # Replace header block
+            # Replace header block.
             new_lines = lines[:header_start] + header_lines + lines[header_end:]
             new_content = '\n'.join(new_lines)
 
             if new_content != content:
                 if getattr(config, 'dry_run', False):
-                    return True  # Report as updated in dry-run
+                    return True  # Report as updated in dry-run.
                 file_path.write_text(new_content, encoding='utf-8')
                 return True
 
@@ -350,12 +494,20 @@ class BaseReleaseAdapter(ABC):
             return False
 
     def add_markdown_header(self, file_path: Path, config) -> bool:
-        """Add metadata header to markdown file if missing."""
+        """Scaffold the v2 metadata header into a markdown file lacking one.
+
+        Doc Version starts at ``config.version`` (i.e., synchronized with
+        the library version at the moment of first scaffolding). After
+        this initial write, the doc author owns Doc Version — subsequent
+        release runs preserve it via :meth:`replace_markdown_header`.
+
+        Applies to is set to ``config.applies_to_range``.
+        """
         try:
             content = file_path.read_text(encoding='utf-8')
             lines = content.splitlines(keepends=True)
 
-            # Find first # heading
+            # Find first # heading.
             title_idx = None
             for i, line in enumerate(lines):
                 if re.match(r'^#\s+\S', line):
@@ -365,22 +517,28 @@ class BaseReleaseAdapter(ABC):
             if title_idx is None:
                 return False
 
-            # Check if header already exists (any bold metadata after title)
-            # Look at lines immediately after title for existing header content
+            # Check if header already exists (any bold metadata after title).
+            # Lenient sniff: accepts both legacy and v2 conventions.
             if title_idx + 1 < len(lines):
                 next_lines = ''.join(lines[title_idx + 1:title_idx + 10])
-                if re.search(r'\*\*(?:Version|Project|Date|Copyright|SPDX)', next_lines):
-                    # Header already exists, don't add another
-                    return False
+                if re.search(
+                    r'\*\*(?:Version|Doc\s+Version|Project|Date|Last\s+Updated'
+                    r'|Applies\s+to|Copyright|SPDX)',
+                    next_lines,
+                    re.IGNORECASE,
+                ):
+                    return False  # Header already exists, don't add another.
 
-            # Create header
+            # Create v2 canonical header.
             status = "Unreleased" if config.is_prerelease else "Released"
+            project_label = config.project_name or "project"
             header = (
                 "\n"
-                f"**Version:** {config.version}<br>\n"
-                f"**Date:** {config.date_str}<br>\n"
-                f"**SPDX-License-Identifier:** BSD-3-Clause<br>\n"
-                f"**License File:** See the LICENSE file in the project root<br>\n"
+                f"**Doc Version:** {config.version}<br>\n"
+                f"**Applies to {project_label}:** {config.applies_to_range}<br>\n"
+                f"**Last Updated:** {config.date_str}<br>\n"
+                "**SPDX-License-Identifier:** BSD-3-Clause<br>\n"
+                "**License File:** See the LICENSE file in the project root<br>\n"
                 f"**Copyright:** © {config.year} Michael Gardner, A Bit of Help, Inc.<br>\n"
                 f"**Status:** {status}\n"
                 "\n"
@@ -389,7 +547,7 @@ class BaseReleaseAdapter(ABC):
             lines.insert(title_idx + 1, header)
 
             if getattr(config, 'dry_run', False):
-                return True  # Report as added in dry-run
+                return True  # Report as added in dry-run.
 
             file_path.write_text(''.join(lines), encoding='utf-8')
             return True
@@ -399,16 +557,26 @@ class BaseReleaseAdapter(ABC):
             return False
 
     def update_all_markdown_files(self, config) -> int:
-        """Update version in all markdown files. Returns count of updated files."""
-        # Note: No files are skipped - all markdown files with version headers
-        # are updated, including formal docs (SRS, SDS, STG)
+        """Sync metadata cover-page header in all in-scope markdown files.
 
+        Scope (per adafmt#23):
+            * ``docs/**/*.md`` and root ``*.md`` and ``config/*.md``
+            * Excludes CHANGELOG.md, LICENSE.md, third_party/**, generated/**,
+              common/** (see :meth:`_is_in_metadata_scope`).
+
+        For each in-scope file:
+            * If a header already exists (lenient detection, both legacy and
+              v2 conventions accepted), it is rewritten in v2 form with
+              Doc Version and Applies to preserved per the field-ownership
+              rules in :meth:`replace_markdown_header`.
+            * If no header exists, one is scaffolded in v2 form.
+
+        Returns count of updated files.
+        """
         all_md_files = []
-        # Include config/ directory for embedded restrictions README
         for pattern in ["docs/**/*.md", "*.md", "config/*.md"]:
             for f in config.project_root.glob(pattern):
-                # Exclude docs/common submodule
-                if "/common/" not in str(f):
+                if self._is_in_metadata_scope(f, config.project_root):
                     all_md_files.append(f)
 
         updated_count = 0
@@ -416,8 +584,10 @@ class BaseReleaseAdapter(ABC):
         for md_file in all_md_files:
             try:
                 content = md_file.read_text(encoding='utf-8')
-                # Check for canonical header format (Version through Status block)
-                has_header = bool(re.search(r'^\*\*Version:', content, re.MULTILINE))
+                # Lenient detection: header exists if either the legacy
+                # (**Version:**) or the v2 (**Doc Version:**) start anchor
+                # is present.
+                has_header = bool(self._HEADER_START_RE.search(content))
 
                 dry_prefix = "[DRY-RUN] Would update" if getattr(config, 'dry_run', False) else "Updated"
                 dry_prefix_add = "[DRY-RUN] Would add" if getattr(config, 'dry_run', False) else "Added"
