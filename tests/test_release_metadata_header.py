@@ -278,7 +278,11 @@ def test_add_header_skips_if_v2_present(tmp_path, adapter):
         ("LICENSE", False),
         ("third_party/foo/README.md", False),
         ("generated/api.md", False),
-        ("docs/common/shared.md", False),  # submodule shared content
+        ("vendor/lib/README.md", False),       # vendored deps
+        ("node_modules/pkg/README.md", False), # JS/TS deps
+        ("dist/index.md", False),              # bundled output
+        ("build/api.md", False),               # build output
+        ("docs/common/shared.md", False),      # submodule shared content
         ("docs/guides/user_guide.md", True),
     ],
 )

@@ -334,7 +334,14 @@ class BaseReleaseAdapter(ABC):
         "LICENSE.md",
         "LICENSE",
     })
-    _EXCLUDED_DIR_PARTS = frozenset({"third_party", "generated"})
+    _EXCLUDED_DIR_PARTS = frozenset({
+        "third_party",   # vendored third-party content
+        "generated",     # build-tool output
+        "vendor",        # Go / Rust / Ruby vendored deps
+        "node_modules",  # JS / TS dependency directory
+        "dist",          # bundled distribution output
+        "build",         # generic build output
+    })
 
     @classmethod
     def _is_in_metadata_scope(cls, path: Path, project_root: Path) -> bool:
@@ -344,7 +351,9 @@ class BaseReleaseAdapter(ABC):
         Excludes:
             * CHANGELOG.md / LICENSE.md / LICENSE (per-release content or
               boilerplate; never carries a doc cover-page header)
-            * any file under ``third_party/`` or ``generated/``
+            * any file under ``third_party/``, ``generated/``, ``vendor/``,
+              ``node_modules/``, ``dist/``, or ``build/`` (vendored content
+              and build output across language ecosystems)
             * any file under a ``common/`` submodule path
         """
         if path.name in cls._EXCLUDED_FILENAMES:
