@@ -49,6 +49,24 @@ def _make_completed_proc(returncode: int, stdout: str = "", stderr: str = ""):
         ("GNATcoverage 1.0\n", "", 1),
         ("no version anywhere here\n", "", None),
         ("", "", None),
+        # Regression: on hosts where `alr exec` emits informational
+        # banners before the gnatcov line (adafmt run 25720362926,
+        # 2026-05-12), the previous regex-on-combined-output
+        # implementation picked up the alr/toolchain version and
+        # mis-dispatched to the v22 legacy runtime-build path. The
+        # marker-based parser must skip those lines and return the
+        # version from the gnatcov line.
+        ("alr 2.1.0\nGNATcoverage 26.2.1 (b465e28d)\n", "", 26),
+        (
+            "alr 2.1.0\nDetected toolchain: GNAT 15.2.1\n"
+            "GPRBuild 25.0.1\nGNATcoverage 26.2.1\n",
+            "",
+            26,
+        ),
+        # No gnatcov marker anywhere — even though noise contains
+        # version-shaped strings, we cannot identify gnatcov's own
+        # version and must return None so the caller falls back.
+        ("alr 2.1.0\nDetected toolchain: GNAT 15.2.1\n", "", None),
     ],
 )
 def test_gnatcov_major_version_parses_typical_outputs(

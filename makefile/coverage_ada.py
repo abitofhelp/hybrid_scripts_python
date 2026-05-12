@@ -210,12 +210,25 @@ def gnatcov_major_version(cwd: Path) -> int | None:
         return None
 
     output = (proc.stdout or "") + (proc.stderr or "")
-    # Typical output: "GNATcoverage 26.2.1 (xxxxx) ..." — match leading
-    # major.minor.patch on the first non-empty line that mentions a version.
-    match = re.search(r"\b(\d+)\.\d+(?:\.\d+)?\b", output)
-    if match is None:
-        return None
-    return int(match.group(1))
+    # Isolate the version match to lines that actually identify gnatcov.
+    # `re.search` over the combined buffer would pick up the FIRST
+    # `digits.digits(.digits)?` it sees, which on hosts where `alr exec`
+    # emits informational banners (e.g. "alr 2.1.0", "GNAT 15.2.1",
+    # "GPRBuild 25.0.1") before the gnatcov line resolves to those
+    # banners — and then the v22 legacy dispatch is taken against v26
+    # runtime sources, which produces a silent gprinstall failure.
+    # Match instead on lines that carry a gnatcov-specific marker:
+    #   - "GNATcoverage <v>"   (canonical AdaCore output)
+    #   - "XCOV FSF <v>"       (older FSF/GPL output)
+    # Returns the major version from the first such line; falls back
+    # to None if no marker line is present (caller takes legacy path).
+    for line in output.splitlines():
+        if not re.search(r"GNATcoverage|XCOV", line):
+            continue
+        m = re.search(r"\b(\d+)\.\d+(?:\.\d+)?\b", line)
+        if m is not None:
+            return int(m.group(1))
+    return None
 
 
 def find_gnatcov_rts_source(root: Path) -> Path | None:
