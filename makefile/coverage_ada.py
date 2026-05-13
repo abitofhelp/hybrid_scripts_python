@@ -209,13 +209,55 @@ def gnatcov_major_version(cwd: Path) -> int | None:
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return None
 
+    # Layer 1: parse `gnatcov --version` output, scoped to lines that
+    # actually identify gnatcov. `re.search` over the combined buffer
+    # would pick up the FIRST `digits.digits(.digits)?` it sees, which
+    # on hosts where `alr exec` emits informational banners (e.g.
+    # "alr 2.1.0", "GNAT 15.2.1", "GPRBuild 25.0.1") before the gnatcov
+    # line resolves to those banners — and then the v22 legacy dispatch
+    # is taken against v26 runtime sources, producing a silent
+    # gprinstall failure. The marker is matched case-insensitively
+    # because actual v26 `gnatcov --version` output may use lower-case
+    # tool naming (and on some hosts the banner is the only text on
+    # stdout at all).
     output = (proc.stdout or "") + (proc.stderr or "")
-    # Typical output: "GNATcoverage 26.2.1 (xxxxx) ..." — match leading
-    # major.minor.patch on the first non-empty line that mentions a version.
-    match = re.search(r"\b(\d+)\.\d+(?:\.\d+)?\b", output)
-    if match is None:
+    for line in output.splitlines():
+        if not re.search(r"gnatcov|xcov", line, re.IGNORECASE):
+            continue
+        m = re.search(r"\b(\d+)\.\d+(?:\.\d+)?\b", line)
+        if m is not None:
+            return int(m.group(1))
+
+    # Layer 2: resolve the gnatcov binary path via `alr exec -- which
+    # gnatcov` and parse the major version from the Alire-managed
+    # install directory. Alire always installs releases under
+    #   .../alire/releases/<crate>_<major>.<minor>.<patch>_<sha>/
+    # so when the binary is provided by Alire (the normal case for
+    # crates that pin `gnatcov` as a test dep) the version is reliably
+    # encoded in the path. This is structurally bulletproof: it does
+    # not depend on the shape of `gnatcov --version` output, which has
+    # varied across releases. Reproduced as the second-order failure
+    # in adafmt run 25722225471 (2026-05-12): gnatcov 26.2.1 was
+    # resolved and installed, but its --version output did not contain
+    # any of the markers Layer 1 looks for, so Layer 1 returned None
+    # and the legacy dispatch was taken anyway.
+    try:
+        proc = subprocess.run(
+            ["alr", "exec", "--", "which", "gnatcov"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
         return None
-    return int(match.group(1))
+    if proc.returncode == 0:
+        path = (proc.stdout or "").strip()
+        m = re.search(r"/gnatcov_(\d+)\.\d+\.\d+_", path)
+        if m is not None:
+            return int(m.group(1))
+    return None
 
 
 def find_gnatcov_rts_source(root: Path) -> Path | None:
