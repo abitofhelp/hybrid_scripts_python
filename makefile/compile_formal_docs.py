@@ -29,9 +29,18 @@
 #   The Typst formal docs use #import "core.typ" which requires core.typ
 #       to be in the same directory at compile time. Rather than maintaining
 #       symlinks or gitmodule mounts, this script creates a temporary working
-#       directory, copies the shared templates and project sources into it,
-#       compiles each document, and writes the PDFs to the project's
-#       docs/formal/ directory. The temporary directory is always cleaned up.
+#       directory, mirrors the project's docs/ subtree into it, overlays the
+#       shared templates next to the mirrored .typ sources, compiles each
+#       document with --root at the docs mirror, and writes the PDFs to the
+#       project's docs/formal/ directory. The temporary directory is always
+#       cleaned up.
+#
+#   Mirroring the whole docs/ subtree (rather than copying .typ files flat)
+#       lets a formal document embed assets from sibling directories with
+#       docs-relative paths, e.g. image("../diagrams/foo.svg"). Compiling
+#       with --root at the mirror keeps those cross-directory references
+#       inside the Typst project root. Generated PDFs are excluded from the
+#       mirror — they are build outputs, not compile inputs.
 #
 # See Also:
 #   /Users/mike/shared_docs/templates/formal/ - shared Typst templates
@@ -130,30 +139,46 @@ def compile_formal_docs(
         return 0
 
     # Create temporary build directory, compile, clean up.
+    #
+    # The project's docs/ subtree is mirrored into the temp build so a
+    # formal document can reference sibling asset directories with
+    # docs-relative paths (e.g. image("../diagrams/foo.svg")).  Compiling
+    # with --root at the mirror keeps those cross-directory references
+    # inside the Typst project root while still colocating the shared
+    # templates with the .typ sources.
+    docs_dir = formal_dir.parent
     with tempfile.TemporaryDirectory(prefix="typst_build_") as tmp:
         tmp_dir = Path(tmp)
+        docs_mirror = tmp_dir / "docs"
 
-        # Copy shared templates into the build directory.
+        # Mirror docs/ — generated PDFs are build outputs, not inputs.
+        shutil.copytree(
+            docs_dir, docs_mirror,
+            ignore=shutil.ignore_patterns("*.pdf"),
+        )
+        mirror_formal = docs_mirror / "formal"
+
+        # Overlay shared templates next to the mirrored .typ sources so
+        # #import "core.typ" (a same-directory import) resolves.
         for template_name in SHARED_TEMPLATES:
             src_path = templates_dir / template_name
             if src_path.is_file():
-                shutil.copy2(src_path, tmp_dir / template_name)
+                shutil.copy2(src_path, mirror_formal / template_name)
 
-        # Copy project .typ sources into the build directory.
-        for src in project_sources:
-            shutil.copy2(src, tmp_dir / src.name)
-
-        # Compile each document.
+        # Compile each document.  --root is the docs mirror so a formal
+        # doc may reference any asset under docs/ (../diagrams/, ...).
         succeeded = 0
         failed = 0
 
         for src in project_sources:
-            typ_path = tmp_dir / src.name
+            typ_path = mirror_formal / src.name
             pdf_name = src.with_suffix(".pdf").name
             pdf_path = formal_dir / pdf_name
 
             result = subprocess.run(
-                ["typst", "compile", str(typ_path), str(pdf_path)],
+                ["typst", "compile",
+                 "--root", str(docs_mirror),
+                 str(typ_path), str(pdf_path)],
                 capture_output=True,
                 text=True,
             )
