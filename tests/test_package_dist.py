@@ -31,14 +31,19 @@ from pathlib import Path
 import pytest
 
 # package_dist lives one level down; conftest already inserted repo root.
+import package_dist.package_dist as pd
 from package_dist.package_dist import (
     ALLOWED_SYSTEM_DEPS,
     _allowlist_matches,
+    classify_bundle_targets,
     create_tarball,
     expected_manifest_entries,
+    find_patchelf,
     include_docs_into_stage,
     parse_ldd_sonames,
     parse_readelf_needed,
+    patch_rpath,
+    verify_resolution,
     verify_tarball_manifest,
     write_sha256,
 )
@@ -402,3 +407,181 @@ def test_verify_tarball_manifest_rejects_unexpected_entry(tmp_path):
     )
     _listing, rc = verify_tarball_manifest(tarball, expected)
     assert rc == 12
+
+
+# ----------------------------------------------------------------------
+# classify_bundle_targets — Linux RPATH bundling decision (adafmt#62 PR-A.2)
+# ----------------------------------------------------------------------
+
+def test_classify_strict_separates_missing_and_host_nonallowlisted():
+    # libgnarl-15.so is "=> not found"; libgmp.so.10 resolves from a host
+    # path and is NOT allowlisted; libc.so.6 resolves and IS allowlisted.
+    found = [
+        ("libc.so.6", Path("/lib/x86_64-linux-gnu/libc.so.6")),
+        ("libgmp.so.10", Path("/lib/x86_64-linux-gnu/libgmp.so.10")),
+    ]
+    missing = ["libgnarl-15.so"]
+    toolchain_targets, host_targets = classify_bundle_targets(found, missing, strict=True)
+    assert toolchain_targets == ["libgnarl-15.so"]
+    assert host_targets == [("libgmp.so.10", Path("/lib/x86_64-linux-gnu/libgmp.so.10"))]
+
+
+def test_classify_nonstrict_ignores_host_deps():
+    # Without --strict-system-deps, host-resolved deps are left alone
+    # (legacy behavior); only "=> not found" deps are bundled.
+    found = [("libgmp.so.10", Path("/lib/x86_64-linux-gnu/libgmp.so.10"))]
+    missing = ["libgnarl-15.so"]
+    toolchain_targets, host_targets = classify_bundle_targets(found, missing, strict=False)
+    assert toolchain_targets == ["libgnarl-15.so"]
+    assert host_targets == []
+
+
+def test_classify_allowlisted_host_deps_never_bundled():
+    # Even in strict mode, allowlisted system libs are never bundled.
+    found = [
+        ("libc.so.6", Path("/lib/x86_64-linux-gnu/libc.so.6")),
+        ("libm.so.6", Path("/lib/x86_64-linux-gnu/libm.so.6")),
+        ("libgcc_s.so.1", Path("/lib/x86_64-linux-gnu/libgcc_s.so.1")),
+    ]
+    toolchain_targets, host_targets = classify_bundle_targets(found, [], strict=True)
+    assert toolchain_targets == []
+    assert host_targets == []
+
+
+def test_classify_empty():
+    assert classify_bundle_targets([], [], strict=True) == ([], [])
+    assert classify_bundle_targets([], [], strict=False) == ([], [])
+
+
+def test_classify_libgmp_is_bundled_in_strict_mode():
+    # GPT directive: host libgmp.so.10 must be bundled (not silently left
+    # as a host dependency) for the strict release path.
+    found = [("libgmp.so.10", Path("/usr/lib/aarch64-linux-gnu/libgmp.so.10"))]
+    _toolchain, host_targets = classify_bundle_targets(found, [], strict=True)
+    assert ("libgmp.so.10", Path("/usr/lib/aarch64-linux-gnu/libgmp.so.10")) in host_targets
+
+
+# ----------------------------------------------------------------------
+# verify_resolution — post-RPATH-patch dependency verification
+# ----------------------------------------------------------------------
+
+def test_verify_passes_when_nonallowlisted_resolves_in_dist_lib(tmp_path):
+    dist_lib = tmp_path / "dist" / "adafmt-x" / "lib"
+    dist_lib.mkdir(parents=True)
+    found = [
+        ("libc.so.6", Path("/lib/x86_64-linux-gnu/libc.so.6")),
+        ("libgnarl-15.so", dist_lib / "libgnarl-15.so"),
+        ("libgmp.so.10", dist_lib / "libgmp.so.10"),
+    ]
+    needed = ["libc.so.6", "libgnarl-15.so", "libgmp.so.10"]
+    ok, reasons = verify_resolution(needed, found, [], dist_lib, strict=True)
+    assert ok is True
+    assert reasons == []
+
+
+def test_verify_fails_on_unresolved_dependency(tmp_path):
+    dist_lib = tmp_path / "lib"
+    dist_lib.mkdir()
+    found = [("libc.so.6", Path("/lib/x86_64-linux-gnu/libc.so.6"))]
+    missing = ["libgnarl-15.so"]
+    needed = ["libc.so.6", "libgnarl-15.so"]
+    ok, reasons = verify_resolution(needed, found, missing, dist_lib, strict=True)
+    assert ok is False
+    assert any("libgnarl-15.so" in r for r in reasons)
+
+
+def test_verify_fails_strict_on_host_path_nonallowlisted(tmp_path):
+    # In strict mode, a non-allowlisted dep that still resolves from a host
+    # path (not from dist_lib) is a release-blocking failure.
+    dist_lib = tmp_path / "lib"
+    dist_lib.mkdir()
+    found = [("libgmp.so.10", Path("/lib/x86_64-linux-gnu/libgmp.so.10"))]
+    needed = ["libgmp.so.10"]
+    ok, reasons = verify_resolution(needed, found, [], dist_lib, strict=True)
+    assert ok is False
+    assert any("libgmp.so.10" in r and "host path" in r for r in reasons)
+
+
+def test_verify_passes_nonstrict_with_host_nonallowlisted(tmp_path):
+    # Without strict, a host-resolved non-allowlisted dep is tolerated.
+    dist_lib = tmp_path / "lib"
+    dist_lib.mkdir()
+    found = [("libgmp.so.10", Path("/lib/x86_64-linux-gnu/libgmp.so.10"))]
+    needed = ["libgmp.so.10"]
+    ok, reasons = verify_resolution(needed, found, [], dist_lib, strict=False)
+    assert ok is True
+    assert reasons == []
+
+
+def test_verify_allowlisted_host_deps_are_ok(tmp_path):
+    # Allowlisted system libs resolving from host paths are always fine.
+    dist_lib = tmp_path / "lib"
+    dist_lib.mkdir()
+    found = [
+        ("libc.so.6", Path("/lib/x86_64-linux-gnu/libc.so.6")),
+        ("libpthread.so.0", Path("/lib/x86_64-linux-gnu/libpthread.so.0")),
+    ]
+    needed = ["libc.so.6", "libpthread.so.0"]
+    ok, reasons = verify_resolution(needed, found, [], dist_lib, strict=True)
+    assert ok is True
+    assert reasons == []
+
+
+def test_verify_fails_when_needed_dep_absent_from_ldd(tmp_path):
+    # A NEEDED soname that appears in neither ldd found nor missing is
+    # treated as unresolved (conservative).
+    dist_lib = tmp_path / "lib"
+    dist_lib.mkdir()
+    needed = ["libphantom.so.1"]
+    ok, reasons = verify_resolution(needed, [], [], dist_lib, strict=True)
+    assert ok is False
+    assert any("libphantom.so.1" in r for r in reasons)
+
+
+# ----------------------------------------------------------------------
+# find_patchelf / patch_rpath
+# ----------------------------------------------------------------------
+
+def test_find_patchelf_present(monkeypatch):
+    monkeypatch.setattr(pd, "which", lambda exe: "/usr/bin/patchelf" if exe == "patchelf" else None)
+    assert find_patchelf() == "/usr/bin/patchelf"
+
+
+def test_find_patchelf_absent(monkeypatch):
+    monkeypatch.setattr(pd, "which", lambda exe: None)
+    assert find_patchelf() is None
+
+
+def test_patch_rpath_builds_expected_command(monkeypatch):
+    captured = {}
+
+    def fake_run_noexcept(cmd, cwd=None):
+        captured["cmd"] = cmd
+        class CP:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return CP()
+
+    monkeypatch.setattr(pd, "run_noexcept", fake_run_noexcept)
+    rc = patch_rpath(Path("/tmp/dist/adafmt-x/bin/adafmt"))
+    assert rc == 0
+    assert captured["cmd"][0] == "patchelf"
+    assert "--set-rpath" in captured["cmd"]
+    # Default RPATH must target the sibling lib/ dir (binary is under bin/).
+    idx = captured["cmd"].index("--set-rpath")
+    assert captured["cmd"][idx + 1] == "$ORIGIN/../lib"
+    assert captured["cmd"][-1] == "/tmp/dist/adafmt-x/bin/adafmt"
+
+
+def test_patch_rpath_propagates_failure(monkeypatch):
+    def fake_run_noexcept(cmd, cwd=None):
+        class CP:
+            returncode = 1
+            stdout = ""
+            stderr = "patchelf: some error"
+        return CP()
+
+    monkeypatch.setattr(pd, "run_noexcept", fake_run_noexcept)
+    rc = patch_rpath(Path("/tmp/dist/adafmt-x/bin/adafmt"))
+    assert rc != 0
