@@ -538,6 +538,35 @@ def test_verify_fails_when_needed_dep_absent_from_ldd(tmp_path):
     assert any("libphantom.so.1" in r for r in reasons)
 
 
+def test_verify_resolution_handles_symlinked_staging_prefix(tmp_path):
+    # The staged tree may be addressed through a symlinked prefix (e.g. on
+    # macOS /tmp resolves to /private/tmp).  verify_resolution normalizes
+    # both the dist_lib path and the resolved dep path via .resolve(), so a
+    # symlink-divergent prefix must NOT produce a false host-leak failure.
+    # This pins that normalization contract (GPT PR-A.2 review noted edge).
+    real_root = tmp_path / "real"
+    real_lib = real_root / "dist" / "adafmt-x" / "lib"
+    real_lib.mkdir(parents=True)
+    (real_lib / "libgnarl-15.so").write_bytes(b"\x7fELF")
+
+    link_root = tmp_path / "link"
+    link_root.symlink_to(real_root, target_is_directory=True)
+
+    # dist_lib addressed via the symlinked prefix; the dep path via the
+    # real prefix.  After .resolve() both normalize to the same real path.
+    dist_lib_via_link = link_root / "dist" / "adafmt-x" / "lib"
+    dep_via_real = real_lib / "libgnarl-15.so"
+
+    ok, reasons = verify_resolution(
+        ["libgnarl-15.so"],
+        [("libgnarl-15.so", dep_via_real)],
+        [],
+        dist_lib_via_link,
+        strict=True,
+    )
+    assert ok is True, reasons
+
+
 # ----------------------------------------------------------------------
 # find_patchelf / patch_rpath
 # ----------------------------------------------------------------------
