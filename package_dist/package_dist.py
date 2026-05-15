@@ -22,12 +22,23 @@ Release-packaging features:
 - --include-docs <comma-separated paths> (optional): copy named project-root
   docs into the staged tree.  Missing files fail (no silent skipping) —
   release artifacts must not ship without their required documentation.
-- --strict-system-deps (optional): Linux only.  After bundling, verify the
-  binary's dynamic dependencies match a narrow system-library allowlist; fail
-  on any unexpected entry.  Three success paths: (a) dynamic binary with only
-  allowlisted system deps, (b) fully/static-mostly binary reporting "not a
-  dynamic executable" / "statically linked", (c) parsed-as-empty NEEDED list.
-  Prefers `readelf -d` for NEEDED entries; falls back to `ldd` parsing.
+- --strict-system-deps (optional): Linux only.  Tightens the bundle step:
+  non-allowlisted runtime dependencies that resolve from a host path (e.g.
+  libgmp.so.10) are also bundled into dist/<basename>/lib/, not just the
+  "=> not found" ones.  After the RUNPATH patch, the verification step
+  re-inspects the binary and FAILS if any non-allowlisted dependency still
+  resolves from a host path instead of from the staged lib/.  Without this
+  flag, only "=> not found" deps are bundled and host-resolved deps are
+  left alone (legacy behavior).  Prefers `readelf -d` for the NEEDED list;
+  falls back to `ldd`-derived sonames.
+
+Linux RPATH (Path A, adafmt#62): copying a shared library next to the
+binary does nothing for the dynamic loader unless the binary's RUNPATH
+points there.  Whenever any library is bundled into dist/<basename>/lib/,
+the staged executable is relinked with `patchelf --set-rpath '$ORIGIN/../lib'`
+so the tarball is self-contained.  `$ORIGIN/../lib` (not `$ORIGIN/lib`)
+because the staged binary lives under <basename>/bin/, one level below
+<basename>/lib/.
 
 Layout:
   project/
@@ -58,16 +69,18 @@ Exit codes:
   3  alr build failed
   4  --bin-name auto-detect ambiguous
   5  binary not found in bin/
-  6  Linux ldd bundling still reports missing deps after copy pass
+  6  Linux: a dependency is still unresolved after bundling + RPATH patch
   7  unsupported platform
   8  smoke test FAIL with --expect-exit / explicit pass-marker mismatch
-  9  --strict-system-deps allowlist violation
+  9  --strict-system-deps: a non-allowlisted dep still resolves from a host path
   10 --include-docs missing a named file
   11 --tarball creation or sha256 step failed
   12 --tarball manifest check found an unexpected entry
+  13 patchelf required to relink bundled libraries but unavailable / patch failed
 
 Notes:
-- Linux relies on: ldd, readelf (preferred for NEEDED parsing), tar, sha256sum.
+- Linux relies on: ldd, readelf (preferred for NEEDED parsing), patchelf
+  (required when any runtime lib is bundled), tar, sha256sum.
 - macOS relies on: otool, install_name_tool (Xcode CLI tools), tar, shasum or sha256sum.
 - macOS codesign (optional): codesign.
 """
@@ -249,46 +262,213 @@ def copy_soname_family_linux(libfile: Path, dist_lib: Path) -> None:
         except Exception:
             pass
 
-def linux_bundle_missing(binary: Path, dist_lib: Path, toolchains_root: Path) -> Tuple[bool, List[str]]:
-    cp = run(["ldd", str(binary)], check=True)
-    _, missing = parse_ldd(cp.stdout)
-    if not missing:
-        print("  - Linux: no missing deps (ldd).")
-        return True, []
+# ---- Path A: bundle + RPATH (adafmt#62) --------------------------------------
+#
+# Copying a shared library next to the binary does nothing for the Linux
+# dynamic loader unless the binary's RUNPATH points there.  The Path A flow
+# bundles every non-allowlisted runtime dependency into dist/<basename>/lib/
+# and then patches the staged executable's RUNPATH to `$ORIGIN/../lib` so the
+# tarball is self-contained.  `$ORIGIN/../lib` (not `$ORIGIN/lib`) is correct
+# because the staged binary lives under <basename>/bin/, one level below
+# <basename>/lib/.
 
-    banner("Linux: bundling missing libraries only")
-    print("Missing:", ", ".join(missing))
+def find_patchelf() -> Optional[str]:
+    """Return the patchelf executable path, or None if it is not installed."""
+    return which("patchelf")
+
+
+def patch_rpath(binary: Path, rpath: str = "$ORIGIN/../lib") -> int:
+    """
+    Set `binary`'s RUNPATH to `rpath` via patchelf.  Returns 0 on success,
+    non-zero on failure.  The caller must confirm patchelf availability
+    (via find_patchelf) before calling this.
+    """
+    cp = run_noexcept(["patchelf", "--set-rpath", rpath, str(binary)])
+    if cp.returncode != 0:
+        if cp.stdout.strip():
+            print(cp.stdout.rstrip())
+        if cp.stderr.strip():
+            print(cp.stderr.rstrip(), file=sys.stderr)
+        print(f"! patchelf --set-rpath failed (exit {cp.returncode}).")
+        return cp.returncode
+    print(f"  - patchelf: set RUNPATH to {rpath}")
+    return 0
+
+
+def classify_bundle_targets(
+    found: List[Tuple[str, Path]],
+    missing: List[str],
+    strict: bool,
+) -> Tuple[List[str], List[Tuple[str, Path]]]:
+    """
+    Decide which dependencies to bundle into dist/<basename>/lib/.
+
+    - toolchain_targets: every `=> not found` soname.  These are always
+      bundled — they are located under the Alire toolchains tree.
+    - host_targets: (soname, host_path) for `found` deps NOT in the system
+      allowlist.  These are bundled from their resolved host path, but ONLY
+      when strict=True.  In non-strict mode host-resolved deps are left
+      alone (legacy behavior).
+
+    Allowlisted system libs (libc, libm, ld-linux, ...) are never bundled.
+    """
+    toolchain_targets = list(missing)
+    host_targets: List[Tuple[str, Path]] = []
+    if strict:
+        for name, path in found:
+            if not _allowlist_matches(name):
+                host_targets.append((name, path))
+    return toolchain_targets, host_targets
+
+
+def verify_resolution(
+    needed: List[str],
+    found: List[Tuple[str, Path]],
+    missing: List[str],
+    dist_lib: Path,
+    strict: bool,
+) -> Tuple[bool, List[str]]:
+    """
+    Verify post-RPATH-patch dependency resolution.
+
+    - Any NEEDED soname still `=> not found` is a failure.
+    - A NEEDED soname absent from both ldd lists is treated as unresolved.
+    - strict: every non-allowlisted NEEDED dep must resolve from inside
+      dist_lib; one resolving from a host path is a failure.
+    - Allowlisted system libs may resolve from anywhere.
+
+    Returns (ok, reasons).  `reasons` is empty when ok is True.
+    """
+    reasons: List[str] = []
+    found_map = {name: path for name, path in found}
+    dist_lib_resolved = dist_lib.resolve()
+
+    for soname in needed:
+        if soname in missing:
+            reasons.append(f"{soname}: unresolved (=> not found)")
+            continue
+        if _allowlist_matches(soname):
+            continue
+        path = found_map.get(soname)
+        if path is None:
+            reasons.append(f"{soname}: NEEDED but absent from ldd resolution")
+            continue
+        if strict:
+            try:
+                inside = dist_lib_resolved in path.resolve().parents
+            except (OSError, RuntimeError):
+                inside = False
+            if not inside:
+                reasons.append(
+                    f"{soname}: non-allowlisted dep resolves from host path "
+                    f"{path} (expected inside {dist_lib})"
+                )
+    return (len(reasons) == 0, reasons)
+
+
+def _bundle_toolchain_lib(libname: str, dist_lib: Path, toolchains_root: Path) -> bool:
+    """Locate `libname` under the Alire toolchains and copy it (+ siblings)
+    into dist_lib.  Returns True if copied, False if not found."""
+    patterns = [libname]
+    if libname.endswith(".so"):
+        patterns.append(libname + "*")
+    if ".so" in libname:
+        patterns.append(libname.split(".so")[0] + ".so*")
+    hits = find_files_under(toolchains_root, patterns)
+    if not hits:
+        print(f"! Could not locate {libname} under {toolchains_root}")
+        return False
+    chosen = hits[0]
+    print(f"  - Found {libname} at: {chosen}")
+    copy_soname_family_linux(chosen, dist_lib)
+    return True
+
+
+def linux_resolve_and_bundle(
+    binary: Path,
+    dist_lib: Path,
+    toolchains_root: Path,
+    strict: bool,
+) -> int:
+    """
+    Path A Linux dependency resolution.  Returns an exit code:
+      0  resolved (or statically linked — nothing to bundle)
+      6  a dependency is still unresolved after bundling + RPATH patch
+      9  strict: a non-allowlisted dep still resolves from a host path
+      13 patchelf is required but unavailable, or the patch step failed
+    """
+    cp = run(["ldd", str(binary)], check=True)
+    found, missing = parse_ldd(cp.stdout)
+
+    # Static-binary fast path (GPT success path (b)): nothing to bundle.
+    _, is_static = parse_ldd_sonames(cp.stdout)
+    if is_static:
+        print("  - Linux: statically linked; no bundling needed.")
+        return 0
+
+    toolchain_targets, host_targets = classify_bundle_targets(found, missing, strict)
+
+    if toolchain_targets or host_targets:
+        banner("Linux: bundling non-system runtime libraries")
+    if toolchain_targets:
+        print("Missing (toolchain):", ", ".join(toolchain_targets))
+    if host_targets:
+        print("Host non-allowlisted:", ", ".join(n for n, _ in host_targets))
 
     ensure_dir(dist_lib)
+    for libname in toolchain_targets:
+        _bundle_toolchain_lib(libname, dist_lib, toolchains_root)
+    for name, host_path in host_targets:
+        if host_path.is_file():
+            print(f"  - Bundling host lib {name} from: {host_path}")
+            copy_soname_family_linux(host_path, dist_lib)
+        else:
+            print(f"! Host lib {name} expected at {host_path} but not a file.")
 
-    for libname in missing:
-        # Try exact name and common variants
-        patterns = [libname]
-        if libname.endswith(".so"):
-            patterns.append(libname + "*")
-        # Also try base.so* (handles libgnarl-15.so.15, etc.)
-        if ".so" in libname:
-            base = libname.split(".so")[0] + ".so*"
-            patterns.append(base)
+    lib_has_content = dist_lib.is_dir() and any(dist_lib.iterdir())
 
-        hits = find_files_under(toolchains_root, patterns)
-        if not hits:
-            print(f"! Could not locate {libname} under {toolchains_root}")
-            continue
-
-        chosen = hits[0]
-        print(f"  - Found {libname} at: {chosen}")
-        copy_soname_family_linux(chosen, dist_lib)
-
-    # Re-check
-    cp2 = run(["ldd", str(binary)], check=True)
-    _, missing2 = parse_ldd(cp2.stdout)
-    ok = len(missing2) == 0
-    if ok:
-        print("  - Linux: all deps resolved after bundling.")
+    # Patch RUNPATH so the bundled libs are discoverable at runtime.
+    if lib_has_content:
+        if not find_patchelf():
+            return fail(
+                "patchelf is required to relink bundled libraries but was "
+                "not found.  Install it (apt-get install -y patchelf).",
+                13,
+            )
+        if patch_rpath(binary) != 0:
+            return fail("RPATH patch step failed.", 13)
     else:
-        print("! Linux: still missing:", ", ".join(missing2))
-    return ok, missing2
+        print("  - Linux: no non-system libs to bundle; no RPATH patch needed.")
+
+    # Re-inspect after patching.
+    cp2 = run(["ldd", str(binary)], check=True)
+    found2, missing2 = parse_ldd(cp2.stdout)
+    print(cp2.stdout.rstrip())
+
+    # Prefer readelf NEEDED (direct deps) for the verification scope;
+    # fall back to the ldd-derived closure when readelf is unavailable.
+    needed: List[str] = []
+    if which("readelf"):
+        rcp = run_noexcept(["readelf", "-d", str(binary)])
+        if rcp.returncode == 0:
+            needed = parse_readelf_needed(rcp.stdout)
+    if not needed:
+        needed = [n for n, _ in found2] + missing2
+
+    ok, reasons = verify_resolution(needed, found2, missing2, dist_lib, strict)
+    if ok:
+        print("  - Linux: dependency resolution verified.")
+        return 0
+
+    banner("Linux: dependency verification FAILED")
+    for r in reasons:
+        print(f"  ! {r}")
+    # Unresolved deps are the more fundamental failure → exit 6;
+    # otherwise it is a strict host-path violation → exit 9.
+    unresolved = any(
+        ("unresolved" in r) or ("absent from ldd" in r) for r in reasons
+    )
+    return 6 if unresolved else 9
 
 
 # -------------------------
@@ -544,67 +724,6 @@ def _allowlist_matches(soname: str) -> bool:
     return any(rx.match(soname) for rx in ALLOWED_SYSTEM_DEPS)
 
 
-def enforce_strict_system_deps(binary: Path) -> int:
-    """
-    Linux only.  Verify the binary's dynamic dependency closure matches
-    ALLOWED_SYSTEM_DEPS.  Prefers `readelf -d`; falls back to `ldd`.
-    Returns 0 on success, 9 on disallowed entries.
-
-    Three success paths:
-      (a) dynamic binary, every NEEDED soname is in ALLOWED_SYSTEM_DEPS.
-      (b) statically-linked binary (ldd "not a dynamic executable" /
-          "statically linked").
-      (c) parsed-as-empty NEEDED list (both readelf and ldd report no deps).
-    """
-    banner("Strict system-deps check")
-
-    sonames: List[str] = []
-    used_tool = ""
-
-    if which("readelf"):
-        cp = run_noexcept(["readelf", "-d", str(binary)])
-        if cp.returncode == 0:
-            sonames = parse_readelf_needed(cp.stdout)
-            used_tool = "readelf"
-            print(f"  - readelf NEEDED: {sonames if sonames else '(empty)'}")
-        else:
-            # readelf failed (not an ELF? cross-platform binary?) — fall through to ldd.
-            print(f"  - readelf failed (exit {cp.returncode}); trying ldd.")
-
-    if used_tool != "readelf":
-        if not which("ldd"):
-            print("! Neither readelf nor ldd is available; cannot verify deps.")
-            return 9
-        cp = run_noexcept(["ldd", str(binary)])
-        # ldd typically exits 0 for dynamic binaries and 1 for "not a dynamic
-        # executable"; both are inspected.  Stdout+stderr are combined because
-        # static binaries often print the message on stderr.
-        combined = (cp.stdout or "") + "\n" + (cp.stderr or "")
-        sonames, is_static = parse_ldd_sonames(combined)
-        used_tool = "ldd"
-        if is_static:
-            print("  - ldd: binary is statically linked (not a dynamic executable).")
-            print("  - strict-system-deps: PASS (static binary).")
-            return 0
-        print(f"  - ldd sonames: {sonames if sonames else '(empty)'}")
-
-    if not sonames:
-        print(f"  - {used_tool}: empty NEEDED list.")
-        print("  - strict-system-deps: PASS (no dynamic deps).")
-        return 0
-
-    disallowed = [s for s in sonames if not _allowlist_matches(s)]
-    if disallowed:
-        print("! strict-system-deps: disallowed deps:")
-        for d in disallowed:
-            print(f"    - {d}")
-        print(f"  - allowlist: {[rx.pattern for rx in ALLOWED_SYSTEM_DEPS]}")
-        return 9
-
-    print("  - strict-system-deps: PASS (all deps allowlisted).")
-    return 0
-
-
 # ---- Tarball + sha256 + manifest -----------------------------------------------
 
 def create_tarball(dist_dir: Path, basename: str, output_dir: Path) -> Tuple[Path, int]:
@@ -797,9 +916,11 @@ def main() -> int:
                          "tree (e.g. LICENSE,THIRD_PARTY_LICENSES.md,README.md,CHANGELOG.md). "
                          "Missing files fail (no silent skipping).")
     ap.add_argument("--strict-system-deps", action="store_true",
-                    help="Linux only: after bundling, verify the binary's dynamic dependency "
-                         "closure matches the ALLOWED_SYSTEM_DEPS allowlist.  Fails on any "
-                         "unexpected entry.")
+                    help="Linux only: also bundle non-allowlisted runtime deps that resolve "
+                         "from host paths (e.g. libgmp), and after the RUNPATH patch fail if "
+                         "any non-allowlisted dep still resolves from a host path instead of "
+                         "the staged lib/.  Without this flag only '=> not found' deps are "
+                         "bundled.")
 
     args = ap.parse_args()
 
@@ -861,17 +982,17 @@ def main() -> int:
     sysname = platform.system().lower()
 
     if sysname == "linux":
-        ok, missing = linux_bundle_missing(dst_bin, dist_lib, args.alire_toolchains)
-        banner("Final ldd")
-        cp = run(["ldd", str(dst_bin)], check=True)
-        print(cp.stdout.rstrip())
-        if not ok:
-            return fail(f"Still missing deps after bundling: {missing}", 6)
-
-        if args.strict_system_deps:
-            rc = enforce_strict_system_deps(dst_bin)
-            if rc != 0:
-                return rc
+        # Path A (adafmt#62): bundle non-system runtime libraries into
+        # dist/<basename>/lib/ and patch the staged binary's RUNPATH so the
+        # tarball is self-contained.  The verification step re-inspects the
+        # binary AFTER the RPATH patch and fails deterministically on any
+        # unresolved (exit 6) or — under --strict-system-deps — any
+        # non-allowlisted host-path (exit 9) dependency.
+        rc = linux_resolve_and_bundle(
+            dst_bin, dist_lib, args.alire_toolchains, args.strict_system_deps
+        )
+        if rc != 0:
+            return rc
 
     elif sysname == "darwin":
         banner("macOS rpath + bundle")
