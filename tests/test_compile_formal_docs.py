@@ -121,3 +121,46 @@ def test_pre_existing_pdf_in_docs_does_not_break_mirror(tmp_path):
     rc = compile_formal_docs.compile_formal_docs(tmp_path, templates)
     assert rc == 0
     assert (tmp_path / "docs" / "formal" / "mini.pdf").is_file()
+
+
+# ----------------------------------------------------------------------
+# Compile-command mechanics — no typst required (monkeypatched subprocess)
+# ----------------------------------------------------------------------
+
+def test_compile_command_roots_at_docs_mirror(tmp_path, monkeypatch):
+    """typst-free coverage of the fix: monkeypatch subprocess.run and
+    assert the compile command is `typst compile --root <mirror>/docs`,
+    that the .typ source is mirrored under <root>/formal/, and that the
+    sibling diagram asset is mirrored under <root>/diagrams/ at the time
+    the compiler is invoked.  Preserves coverage of the docs-mirror
+    mechanics on runners without typst installed."""
+    _make_project(tmp_path, with_diagram=True)
+    templates = tmp_path / "templates"
+    templates.mkdir()
+
+    captured: dict = {}
+
+    def fake_run(cmd, capture_output=False, text=False):
+        captured["cmd"] = list(cmd)
+        root_idx = cmd.index("--root")
+        root = Path(cmd[root_idx + 1])
+        captured["root"] = root
+        # State checked while the temp build dir still exists:
+        captured["diagram_mirrored"] = (root / "diagrams" / "dot.svg").is_file()
+        captured["typ_parent"] = Path(cmd[-2]).parent.name
+
+        class _CP:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _CP()
+
+    monkeypatch.setattr(compile_formal_docs.subprocess, "run", fake_run)
+    rc = compile_formal_docs.compile_formal_docs(tmp_path, templates)
+
+    assert rc == 0
+    assert captured["cmd"][:3] == ["typst", "compile", "--root"]
+    assert captured["root"].name == "docs"
+    assert captured["diagram_mirrored"] is True
+    assert captured["typ_parent"] == "formal"
