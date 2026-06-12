@@ -1000,7 +1000,9 @@ def create_rc_release(config, adapter, args) -> bool:
       3. Verify local tag:
          - object type is "tag" (annotated, not lightweight)
          - peels to target SHA
-         - subject matches expected message
+         - FULL annotated tag message matches the expected message
+           (only trailing newlines are normalized; internal structure
+           and body content are compared verbatim)
       4. Capture before_push UTC timestamp; git push origin refs/tags/<tag>
          (tag only — never main)
       5. Verify remote tag peels to target SHA
@@ -1281,10 +1283,13 @@ def create_rc_release(config, adapter, args) -> bool:
     print_section("\nStep 3/9: Verify local tag is annotated + correct")
     local_tag_obj_sha = "(unknown)"
     if dry:
+        _exp_msg_norm = tag_message.rstrip('\n')
+        _exp_subject = _exp_msg_norm.split('\n', 1)[0]
         print_info(
             f"  [DRY-RUN] Would verify {tag_name}: object type=tag, "
-            f"peels to {resolved_target[:12]}, subject matches "
-            f"{tag_message.split(chr(10), 1)[0]!r}"
+            f"peels to {resolved_target[:12]}, full annotated message "
+            f"matches expected ({len(_exp_msg_norm)} chars, "
+            f"subject={_exp_subject!r})"
         )
     else:
         # 3a. Object type must be "tag" (annotated, not lightweight).
@@ -1323,27 +1328,49 @@ def create_rc_release(config, adapter, args) -> bool:
             _emit_remediation_local_tag_only(tag_name)
             return False
 
-        # 3c. Tag subject matches first line of expected message.
+        # 3c. FULL annotated tag message matches expected.
+        # `git for-each-ref --format=%(contents)` on an annotated tag ref
+        # returns the entire tag message (subject + blank line + body, if
+        # any), excluding the header lines (object/type/tag/tagger).
+        #
+        # Newline normalization: only trailing '\n' characters are stripped
+        # from both sides; internal whitespace, blank lines, and body
+        # structure are compared verbatim. A multi-line message is therefore
+        # verified in full, not only by its subject line.
         r = _run_capture(
-            ["git", "tag", "-l", "--format=%(contents:subject)", tag_name],
+            ["git", "for-each-ref",
+             "--format=%(contents)",
+             f"refs/tags/{tag_name}"],
             config.project_root,
         )
         if r.returncode != 0:
             print_error(
-                f"  git tag -l --format failed: {r.stderr.strip()}"
+                f"  git for-each-ref --format failed: {r.stderr.strip()}"
             )
             _emit_remediation_local_tag_only(tag_name)
             return False
-        actual_subject = r.stdout.strip()
-        expected_subject = tag_message.split('\n', 1)[0].strip()
-        if actual_subject != expected_subject:
+        # An empty stdout here would indicate the ref didn't resolve to an
+        # annotated tag (or didn't resolve at all); treat as fail.
+        if r.stdout == "":
             print_error(
-                "  Tag subject mismatch.\n"
-                f"  Expected: {expected_subject!r}\n"
-                f"  Actual  : {actual_subject!r}"
+                f"  git for-each-ref returned empty output for "
+                f"refs/tags/{tag_name}; cannot verify tag message."
             )
             _emit_remediation_local_tag_only(tag_name)
             return False
+        actual_message = r.stdout.rstrip('\n')
+        expected_message = tag_message.rstrip('\n')
+        if actual_message != expected_message:
+            print_error(
+                "  Annotated tag message mismatch (full-message compare).\n"
+                f"  Expected ({len(expected_message)} chars): "
+                f"{expected_message!r}\n"
+                f"  Actual   ({len(actual_message)} chars): "
+                f"{actual_message!r}"
+            )
+            _emit_remediation_local_tag_only(tag_name)
+            return False
+        actual_subject = actual_message.split('\n', 1)[0]
 
         # 3d. Capture tag object SHA for reporting.
         r = _run_capture(
@@ -1354,7 +1381,9 @@ def create_rc_release(config, adapter, args) -> bool:
 
         print_success(
             f"  Annotated tag {tag_name} OK (obj={local_tag_obj_sha[:12]}, "
-            f"commit={tagged_commit[:12]}, subject={actual_subject!r})"
+            f"commit={tagged_commit[:12]}, "
+            f"msg={len(actual_message)} chars, "
+            f"subject={actual_subject!r})"
         )
 
     # =====================================================================
