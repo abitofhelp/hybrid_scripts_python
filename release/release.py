@@ -32,7 +32,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -881,6 +881,772 @@ def create_release(config, adapter) -> bool:
     return True
 
 
+def _run_capture(cmd, cwd):
+    """Run a command capturing stdout/stderr. Never raises."""
+    return subprocess.run(
+        cmd, cwd=cwd, capture_output=True, text=True, errors='replace'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Partial-state remediation messages for rc-tag.
+#
+# Each helper is called on a hard failure that occurs after one or more
+# mutations succeeded, so the user always knows what state to clean up.
+# ---------------------------------------------------------------------------
+
+def _emit_remediation_local_tag_only(tag_name):
+    print_warning(
+        "\n  PARTIAL STATE: a local annotated tag was created but no remote "
+        "action completed.\n"
+        f"  Local tag present     : {tag_name}\n"
+        "  Remote tag present    : NO\n"
+        "  GitHub Release present: NO\n"
+        "  release-linux.yml run : NOT DISPATCHED\n"
+        "  Roll back the local-only tag:\n"
+        f"    git tag -d {tag_name}\n"
+    )
+
+
+def _emit_remediation_remote_tag_only(tag_name):
+    print_warning(
+        "\n  PARTIAL STATE: the annotated tag was pushed to origin but the "
+        "GitHub Release was not created.\n"
+        f"  Local tag present     : {tag_name}\n"
+        f"  Remote tag present    : {tag_name}\n"
+        "  GitHub Release present: NO\n"
+        "  release-linux.yml run : MAY HAVE DISPATCHED (tag push triggers it)\n"
+        "  Choices:\n"
+        "    (a) Retry Release creation (tag is already in place):\n"
+        f"        gh release create {tag_name} --draft --prerelease "
+        "--verify-tag \\\n"
+        "          --title <TITLE> --notes-file <PATH>\n"
+        "    (b) Roll back the tag (cancels release-linux.yml if still "
+        "running):\n"
+        f"        git push origin :refs/tags/{tag_name}\n"
+        f"        git tag -d {tag_name}\n"
+    )
+
+
+def _emit_remediation_release_created(tag_name):
+    print_warning(
+        "\n  PARTIAL STATE: the tag and a draft Release exist; verification "
+        "of the Release failed.\n"
+        f"  Local tag present     : {tag_name}\n"
+        f"  Remote tag present    : {tag_name}\n"
+        f"  GitHub Release present: {tag_name} (state unverified)\n"
+        "  release-linux.yml run : likely dispatched\n"
+        "  Inspect:\n"
+        f"    gh release view {tag_name} --json "
+        "isDraft,isPrerelease,tagName,targetCommitish\n"
+        "    gh run list --workflow=release-linux.yml --event=push --limit 5\n"
+        "  Roll back (if needed):\n"
+        f"    gh release delete {tag_name} --yes\n"
+        f"    git push origin :refs/tags/{tag_name}\n"
+        f"    git tag -d {tag_name}\n"
+    )
+
+
+def _emit_remediation_workflow_missing(tag_name):
+    print_warning(
+        "\n  PARTIAL STATE: tag and draft Release exist, but no matching "
+        "release-linux.yml run was detected.\n"
+        f"  Local tag present     : {tag_name}\n"
+        f"  Remote tag present    : {tag_name}\n"
+        f"  GitHub Release present: {tag_name} (draft, prerelease)\n"
+        "  release-linux.yml run : NOT DETECTED\n"
+        "  Inspect:\n"
+        "    gh workflow view release-linux.yml\n"
+        "    gh run list --workflow=release-linux.yml --limit 10\n"
+        "  Possible causes:\n"
+        f"    - on:push:tags filter in the workflow file does not match "
+        f"{tag_name}\n"
+        "    - repository Actions are disabled\n"
+        "    - GitHub Actions outage\n"
+        "  Manual dispatch (if the workflow supports workflow_dispatch):\n"
+        f"    gh workflow run release-linux.yml --ref {tag_name}\n"
+        "  Roll back (if needed):\n"
+        f"    gh release delete {tag_name} --yes\n"
+        f"    git push origin :refs/tags/{tag_name}\n"
+        f"    git tag -d {tag_name}\n"
+    )
+
+
+def create_rc_release(config, adapter, args) -> bool:
+    """Create a release candidate as a DRAFT + PRERELEASE GitHub Release
+    backed by an explicit annotated tag at a caller-supplied commit SHA.
+
+    SAFETY ORDERING (post-Codex review of PR #16):
+      The annotated tag is created and pushed BEFORE the GitHub Release is
+      created, and the Release is created with --verify-tag. This prevents
+      `gh release create` from auto-creating a remote tag of its own
+      (which could be lightweight or otherwise unintended).
+
+    Every gh/git boundary operation is followed by an explicit post-state
+    verification step. Silent return is never inferred as success
+    (see feedback_no_silent_success_inference_at_boundaries).
+
+    Ordered steps:
+      1. Preflight (read-only, fail-closed):
+         - clean working tree
+         - HEAD == main == origin/main == target (single canonical state;
+           caller may not tag anything other than the current main HEAD)
+         - local tag absent
+         - remote tag absent (distinguish not-found from query-failure)
+         - GitHub Release absent (distinguish not-found from query-failure)
+         - release-notes file present, non-empty, and byte-identical to
+           its committed content at the target SHA
+      2. git tag -a <tag> <SHA> -m <message>
+      3. Verify local tag:
+         - object type is "tag" (annotated, not lightweight)
+         - peels to target SHA
+         - FULL annotated tag message matches the expected message
+           (only trailing newlines are normalized; internal structure
+           and body content are compared verbatim)
+      4. Capture before_push UTC timestamp; git push origin refs/tags/<tag>
+         (tag only — never main)
+      5. Verify remote tag peels to target SHA
+      6. gh release create <tag> --draft --prerelease --verify-tag
+         (refuses to create if tag absent; never auto-creates a tag)
+      7. Verify Release: isDraft + isPrerelease + tagName
+      8. Confirm release-linux.yml dispatched a matching run.
+         Filter: workflow=release-linux.yml AND event=push AND
+                 createdAt >= before_push_iso - 30s AND
+                 (headBranch == <tag> OR headSha == <target>)
+         Hard failure if no matching run is found within ~40 s.
+      9. Summary + manual publish step (gh release edit <tag> --draft=false).
+
+    --dry-run is strictly non-mutating: every mutation step (including
+    `git fetch`, `git tag`, `git push`, `gh release create`) is skipped.
+    Read-only preflight verifications still run; they use whatever cached
+    remote-tracking refs already exist (caller should `git fetch` first
+    if fresh state is required).
+
+    On hard failure at any step *after* a mutation has succeeded, a
+    PARTIAL-STATE remediation block is printed naming exactly what
+    survived and how to roll it back or recover.
+
+    Args:
+        config:  ReleaseConfig (project_root, version, dry_run).
+        adapter: Language adapter (only used for verify_clean_working_tree).
+        args:    argparse.Namespace carrying target, tag_message,
+                 release_title, release_notes_file.
+
+    Returns:
+        True on success, False on any failure.
+    """
+    tag_name = config.tag_name  # "v<version>"
+    target_sha = args.target
+    tag_message = args.tag_message or f"Release candidate {config.version}"
+    release_title = args.release_title or f"Release {config.version}"
+    dry = bool(config.dry_run)
+
+    print_section(f"\n{'='*70}")
+    print_section(
+        f"RC-TAG {tag_name} -> {target_sha[:12]} (DRAFT, PRERELEASE)"
+        + (" [DRY-RUN]" if dry else "")
+    )
+    print_section(f"{'='*70}\n")
+
+    # =====================================================================
+    # Step 1: PREFLIGHT (read-only; runs in dry-run too; fail-closed)
+    # =====================================================================
+    print_section("Step 1/9: Preflight")
+
+    # 1a. Working tree clean
+    print_info("  1a. Verifying clean working tree...")
+    if not adapter.verify_clean_working_tree(config):
+        print_error("  Working tree is not clean.")
+        return False
+    print_success("  Working tree is clean")
+
+    # 1b. Fetch origin (refs + tags). NOT a no-op — it writes to
+    # .git/refs/remotes/origin/. Codex review: skip in dry-run.
+    if dry:
+        print_info(
+            "  1b. [DRY-RUN] Skipping `git fetch origin --tags` "
+            "(would mutate refs/remotes/origin/*).\n"
+            "      Using cached remote-tracking refs. Run "
+            "`git fetch origin --tags` before --dry-run if fresh state "
+            "is required."
+        )
+    else:
+        print_info("  1b. Fetching origin (refs + tags)...")
+        r = _run_capture(
+            ["git", "fetch", "origin", "--tags"], config.project_root
+        )
+        if r.returncode != 0:
+            print_error(f"  git fetch failed: {r.stderr.strip()}")
+            return False
+        print_success("  Fetched origin")
+
+    # 1c. HEAD == main == origin/main == target (single canonical state).
+    print_info(
+        "  1c. Verifying HEAD == main == origin/main == target..."
+    )
+    head_r = _run_capture(
+        ["git", "rev-parse", "HEAD"], config.project_root
+    )
+    main_r = _run_capture(
+        ["git", "rev-parse", "main"], config.project_root
+    )
+    remote_r = _run_capture(
+        ["git", "rev-parse", "origin/main"], config.project_root
+    )
+    if (head_r.returncode != 0 or main_r.returncode != 0
+            or remote_r.returncode != 0):
+        print_error(
+            "  Query failed: cannot resolve one of HEAD/main/origin/main.\n"
+            f"  HEAD       : rc={head_r.returncode} {head_r.stderr.strip()!r}\n"
+            f"  main       : rc={main_r.returncode} {main_r.stderr.strip()!r}\n"
+            f"  origin/main: rc={remote_r.returncode} {remote_r.stderr.strip()!r}"
+        )
+        return False
+    head_sha = head_r.stdout.strip()
+    main_sha = main_r.stdout.strip()
+    remote_main_sha = remote_r.stdout.strip()
+
+    # Resolve target SHA to a full canonical commit SHA.
+    r = _run_capture(
+        ["git", "rev-parse", "--verify", f"{target_sha}^{{commit}}"],
+        config.project_root,
+    )
+    if r.returncode != 0:
+        print_error(
+            f"  Target SHA does not resolve to a commit: {target_sha} "
+            f"({r.stderr.strip()})"
+        )
+        return False
+    resolved_target = r.stdout.strip()
+
+    if not (head_sha == main_sha == remote_main_sha == resolved_target):
+        print_error(
+            "  Required canonical state not satisfied:\n"
+            f"    HEAD        = {head_sha}\n"
+            f"    main        = {main_sha}\n"
+            f"    origin/main = {remote_main_sha}\n"
+            f"    target      = {resolved_target}\n"
+            "  All four must be equal. To recover, either:\n"
+            "    - check out main + fast-forward to origin/main, OR\n"
+            "    - re-invoke rc-tag with --target equal to current "
+            "origin/main HEAD."
+        )
+        return False
+    print_success(
+        f"  HEAD == main == origin/main == target == {resolved_target[:12]}"
+    )
+
+    # 1d. Local tag absent (fail-closed on query failure).
+    print_info(f"  1d. Verifying local tag {tag_name} absent...")
+    r = _run_capture(
+        ["git", "tag", "-l", tag_name], config.project_root
+    )
+    if r.returncode != 0:
+        print_error(
+            f"  Query failed (git tag -l, rc={r.returncode}): "
+            f"{r.stderr.strip()}. Aborting (fail-closed)."
+        )
+        return False
+    if r.stdout.strip() == tag_name:
+        print_error(f"  Local tag {tag_name} already exists.")
+        return False
+    print_success(f"  Local tag {tag_name} absent")
+
+    # 1e. Remote tag absent — distinguish not-found from query-failure
+    # using `git ls-remote --exit-code`:
+    #   rc=0  -> ref(s) found       (= tag exists, abort)
+    #   rc=2  -> no matching refs   (= tag absent, ok)
+    #   other -> network / auth     (= query failed, fail-closed)
+    print_info(f"  1e. Verifying remote tag {tag_name} absent...")
+    r = _run_capture(
+        ["git", "ls-remote", "--exit-code", "--tags", "origin",
+         f"refs/tags/{tag_name}"],
+        config.project_root,
+    )
+    if r.returncode == 0:
+        print_error(
+            f"  Remote tag {tag_name} already exists:\n  {r.stdout.strip()}"
+        )
+        return False
+    elif r.returncode == 2:
+        print_success(
+            f"  Remote tag {tag_name} absent (ls-remote --exit-code=2)"
+        )
+    else:
+        print_error(
+            f"  Query failed (git ls-remote, rc={r.returncode}): "
+            f"{r.stderr.strip() or r.stdout.strip()}.\n"
+            "  Cannot determine whether remote tag exists. "
+            "Aborting (fail-closed)."
+        )
+        return False
+
+    # 1f. GitHub Release absent — fail-closed on query failure.
+    #   rc=0                          -> exists, abort
+    #   rc!=0 + "release not found"   -> absent, ok
+    #   rc!=0 otherwise               -> query failed, fail-closed
+    print_info(f"  1f. Verifying GitHub Release {tag_name} absent...")
+    r = _run_capture(
+        ["gh", "release", "view", tag_name, "--json", "tagName"],
+        config.project_root,
+    )
+    if r.returncode == 0:
+        print_error(f"  GitHub Release {tag_name} already exists.")
+        return False
+    stderr_lower = (r.stderr or "").lower()
+    if "release not found" in stderr_lower:
+        print_success(f"  GitHub Release {tag_name} absent")
+    else:
+        print_error(
+            f"  Query failed (gh release view, rc={r.returncode}): "
+            f"{r.stderr.strip() or r.stdout.strip()}\n"
+            "  Cannot determine whether GitHub Release exists. "
+            "Aborting (fail-closed)."
+        )
+        return False
+
+    # 1g. Release-notes file present, non-empty, AND byte-identical to
+    # the same path committed at the target SHA. This is what guarantees
+    # the notes that ship with the Release are the ones reviewed under
+    # the target commit.
+    notes_path = Path(args.release_notes_file).expanduser()
+    if not notes_path.is_absolute():
+        notes_path = (config.project_root / notes_path).resolve()
+    print_info(f"  1g. Verifying release-notes file: {notes_path}")
+    if not notes_path.is_file():
+        print_error(f"  Release-notes file not found: {notes_path}")
+        return False
+    if notes_path.stat().st_size == 0:
+        print_error(f"  Release-notes file is empty: {notes_path}")
+        return False
+    try:
+        rel_notes_path = notes_path.relative_to(config.project_root)
+    except ValueError:
+        print_error(
+            f"  Release-notes file {notes_path} is outside project root "
+            f"{config.project_root}; cannot verify it matches target SHA."
+        )
+        return False
+    show_r = _run_capture(
+        ["git", "show", f"{resolved_target}:{rel_notes_path}"],
+        config.project_root,
+    )
+    if show_r.returncode != 0:
+        print_error(
+            f"  Notes file {rel_notes_path} not present at target SHA "
+            f"{resolved_target[:12]}: {show_r.stderr.strip()}.\n"
+            "  The release notes must already be committed at the target SHA."
+        )
+        return False
+    tree_content = notes_path.read_text(encoding='utf-8', errors='replace')
+    git_content = show_r.stdout
+    if tree_content != git_content:
+        # Tolerate LF/CRLF normalization on platforms that round-trip
+        # text files through autocrlf — but only that.
+        if (tree_content.replace('\r\n', '\n')
+                != git_content.replace('\r\n', '\n')):
+            print_error(
+                "  Working-tree notes file content differs from the "
+                f"content committed at target SHA {resolved_target[:12]}.\n"
+                f"  Working tree: {len(tree_content)} chars\n"
+                f"  Target SHA  : {len(git_content)} chars"
+            )
+            return False
+    print_success(
+        f"  Release-notes file present + matches target SHA "
+        f"({notes_path.stat().st_size} bytes)"
+    )
+
+    # =====================================================================
+    # Step 2: Create local annotated tag
+    # =====================================================================
+    print_section("\nStep 2/9: Create annotated tag locally")
+    tag_cmd = [
+        "git", "tag", "-a", tag_name, resolved_target, "-m", tag_message,
+    ]
+    state_local_tag_created = False
+    if dry:
+        print_info(f"  [DRY-RUN] Would run: {' '.join(tag_cmd)}")
+    else:
+        r = _run_capture(tag_cmd, config.project_root)
+        if r.returncode != 0:
+            print_error(
+                f"  git tag failed (rc={r.returncode}): {r.stderr.strip()}"
+            )
+            return False  # no remediation: nothing to clean up yet
+        state_local_tag_created = True
+        print_success(f"  Created local annotated tag {tag_name}")
+
+    # =====================================================================
+    # Step 3: Verify local tag (annotated, peels to target, subject matches)
+    # =====================================================================
+    print_section("\nStep 3/9: Verify local tag is annotated + correct")
+    local_tag_obj_sha = "(unknown)"
+    if dry:
+        _exp_msg_norm = tag_message.rstrip('\n')
+        _exp_subject = _exp_msg_norm.split('\n', 1)[0]
+        print_info(
+            f"  [DRY-RUN] Would verify {tag_name}: object type=tag, "
+            f"peels to {resolved_target[:12]}, full annotated message "
+            f"matches expected ({len(_exp_msg_norm)} chars, "
+            f"subject={_exp_subject!r})"
+        )
+    else:
+        # 3a. Object type must be "tag" (annotated, not lightweight).
+        r = _run_capture(
+            ["git", "cat-file", "-t", tag_name], config.project_root
+        )
+        if r.returncode != 0:
+            print_error(
+                f"  git cat-file -t failed: {r.stderr.strip()}"
+            )
+            _emit_remediation_local_tag_only(tag_name)
+            return False
+        obj_type = r.stdout.strip()
+        if obj_type != "tag":
+            print_error(
+                f"  Tag is not annotated (object type={obj_type}, expected "
+                "'tag'). Lightweight tags are rejected."
+            )
+            _emit_remediation_local_tag_only(tag_name)
+            return False
+
+        # 3b. Tag peels to target SHA.
+        r = _run_capture(
+            ["git", "rev-list", "-n", "1", tag_name], config.project_root
+        )
+        if r.returncode != 0:
+            print_error(f"  git rev-list failed: {r.stderr.strip()}")
+            _emit_remediation_local_tag_only(tag_name)
+            return False
+        tagged_commit = r.stdout.strip()
+        if tagged_commit != resolved_target:
+            print_error(
+                f"  Tag commit {tagged_commit} != expected "
+                f"{resolved_target}"
+            )
+            _emit_remediation_local_tag_only(tag_name)
+            return False
+
+        # 3c. FULL annotated tag message matches expected.
+        # `git for-each-ref --format=%(contents)` on an annotated tag ref
+        # returns the entire tag message (subject + blank line + body, if
+        # any), excluding the header lines (object/type/tag/tagger).
+        #
+        # Newline normalization: only trailing '\n' characters are stripped
+        # from both sides; internal whitespace, blank lines, and body
+        # structure are compared verbatim. A multi-line message is therefore
+        # verified in full, not only by its subject line.
+        r = _run_capture(
+            ["git", "for-each-ref",
+             "--format=%(contents)",
+             f"refs/tags/{tag_name}"],
+            config.project_root,
+        )
+        if r.returncode != 0:
+            print_error(
+                f"  git for-each-ref --format failed: {r.stderr.strip()}"
+            )
+            _emit_remediation_local_tag_only(tag_name)
+            return False
+        # An empty stdout here would indicate the ref didn't resolve to an
+        # annotated tag (or didn't resolve at all); treat as fail.
+        if r.stdout == "":
+            print_error(
+                f"  git for-each-ref returned empty output for "
+                f"refs/tags/{tag_name}; cannot verify tag message."
+            )
+            _emit_remediation_local_tag_only(tag_name)
+            return False
+        actual_message = r.stdout.rstrip('\n')
+        expected_message = tag_message.rstrip('\n')
+        if actual_message != expected_message:
+            print_error(
+                "  Annotated tag message mismatch (full-message compare).\n"
+                f"  Expected ({len(expected_message)} chars): "
+                f"{expected_message!r}\n"
+                f"  Actual   ({len(actual_message)} chars): "
+                f"{actual_message!r}"
+            )
+            _emit_remediation_local_tag_only(tag_name)
+            return False
+        actual_subject = actual_message.split('\n', 1)[0]
+
+        # 3d. Capture tag object SHA for reporting.
+        r = _run_capture(
+            ["git", "rev-parse", tag_name], config.project_root
+        )
+        if r.returncode == 0:
+            local_tag_obj_sha = r.stdout.strip()
+
+        print_success(
+            f"  Annotated tag {tag_name} OK (obj={local_tag_obj_sha[:12]}, "
+            f"commit={tagged_commit[:12]}, "
+            f"msg={len(actual_message)} chars, "
+            f"subject={actual_subject!r})"
+        )
+
+    # =====================================================================
+    # Step 4: Capture before_push timestamp + push tag only
+    # =====================================================================
+    print_section("\nStep 4/9: Push tag to origin (tag only)")
+    push_cmd = ["git", "push", "origin", f"refs/tags/{tag_name}"]
+    before_push_dt = None
+    state_remote_tag_pushed = False
+    if dry:
+        print_info(
+            "  [DRY-RUN] Would capture before_push UTC timestamp, then "
+            f"run: {' '.join(push_cmd)}"
+        )
+    else:
+        before_push_dt = datetime.now(timezone.utc)
+        before_push_iso = before_push_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        print_info(f"  before_push = {before_push_iso}")
+        r = _run_capture(push_cmd, config.project_root)
+        if r.returncode != 0:
+            print_error(
+                f"  git push failed (rc={r.returncode}): {r.stderr.strip()}"
+            )
+            _emit_remediation_local_tag_only(tag_name)
+            return False
+        state_remote_tag_pushed = True
+        print_success(f"  Pushed tag {tag_name}")
+
+    # =====================================================================
+    # Step 5: Verify remote tag peels to target SHA
+    # =====================================================================
+    print_section("\nStep 5/9: Verify remote tag")
+    if dry:
+        print_info(
+            f"  [DRY-RUN] Would verify origin {tag_name} -> "
+            f"{resolved_target[:12]}"
+        )
+    else:
+        r = _run_capture(
+            ["git", "ls-remote", "--tags", "origin",
+             f"refs/tags/{tag_name}"],
+            config.project_root,
+        )
+        if r.returncode != 0 or r.stdout.strip() == "":
+            print_error(
+                f"  Remote tag {tag_name} not visible after push:\n"
+                f"  stdout={r.stdout!r} stderr={r.stderr.strip()!r}"
+            )
+            _emit_remediation_remote_tag_only(tag_name)
+            return False
+        # `ls-remote` prints "<obj-sha>\t<ref>" lines. For an annotated tag
+        # it also prints a peeled "<commit-sha>\trefs/tags/<tag>^{}" line —
+        # that's the commit we compare against resolved_target.
+        peeled = None
+        for line in r.stdout.strip().splitlines():
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            sha, ref = parts[0], parts[1].strip()
+            if ref == f"refs/tags/{tag_name}^{{}}":
+                peeled = sha
+                break
+        if peeled is None:
+            print_error(
+                "  Remote tag has no peeled ref — likely a lightweight tag, "
+                "which is rejected. ls-remote output:\n"
+                f"  {r.stdout.strip()}"
+            )
+            _emit_remediation_remote_tag_only(tag_name)
+            return False
+        if peeled != resolved_target:
+            print_error(
+                f"  Remote tag commit {peeled} != expected {resolved_target}"
+            )
+            _emit_remediation_remote_tag_only(tag_name)
+            return False
+        print_success(
+            f"  Remote tag {tag_name} -> {peeled} "
+            f"(local obj={local_tag_obj_sha[:12]})"
+        )
+
+    # =====================================================================
+    # Step 6: Create GitHub draft prerelease using existing remote tag.
+    # `--verify-tag` makes gh refuse the call if the tag does not already
+    # exist on the remote — closing the door on accidental tag auto-create.
+    # =====================================================================
+    print_section(
+        "\nStep 6/9: Create GitHub Release (draft, prerelease, --verify-tag)"
+    )
+    create_cmd = [
+        "gh", "release", "create", tag_name,
+        "--draft",
+        "--prerelease",
+        "--verify-tag",
+        "--title", release_title,
+        "--notes-file", str(notes_path),
+    ]
+    state_release_created = False
+    if dry:
+        print_info(f"  [DRY-RUN] Would run: {' '.join(create_cmd)}")
+    else:
+        r = _run_capture(create_cmd, config.project_root)
+        if r.returncode != 0:
+            print_error(
+                f"  gh release create failed (rc={r.returncode}): "
+                f"{r.stderr.strip()}"
+            )
+            _emit_remediation_remote_tag_only(tag_name)
+            return False
+        state_release_created = True
+        print_success(
+            f"  Created draft prerelease: {r.stdout.strip() or tag_name}"
+        )
+
+    # =====================================================================
+    # Step 7: Verify Release state via re-query
+    # =====================================================================
+    print_section("\nStep 7/9: Verify Release state")
+    if dry:
+        print_info(
+            "  [DRY-RUN] Would verify isDraft=true, isPrerelease=true, "
+            f"tagName={tag_name}"
+        )
+    else:
+        r = _run_capture(
+            ["gh", "release", "view", tag_name,
+             "--json", "isDraft,isPrerelease,tagName"],
+            config.project_root,
+        )
+        if r.returncode != 0:
+            print_error(f"  gh release view failed: {r.stderr.strip()}")
+            _emit_remediation_release_created(tag_name)
+            return False
+        try:
+            data = json.loads(r.stdout)
+        except json.JSONDecodeError as e:
+            print_error(f"  Could not parse gh release view JSON: {e}")
+            _emit_remediation_release_created(tag_name)
+            return False
+        if not data.get("isDraft"):
+            print_error(f"  Release is not draft: {data}")
+            _emit_remediation_release_created(tag_name)
+            return False
+        if not data.get("isPrerelease"):
+            print_error(f"  Release is not prerelease: {data}")
+            _emit_remediation_release_created(tag_name)
+            return False
+        if data.get("tagName") != tag_name:
+            print_error(
+                f"  Tag name mismatch: {data.get('tagName')} != {tag_name}"
+            )
+            _emit_remediation_release_created(tag_name)
+            return False
+        # targetCommitish on a Release created with --verify-tag may be
+        # reported as the default branch name (e.g., "main") rather than
+        # the commit SHA, because the tag→SHA binding lives on the tag
+        # itself — which step 5 has already verified.
+        print_success(
+            f"  Release verified: draft + prerelease, tagName={tag_name}"
+        )
+
+    # =====================================================================
+    # Step 8: Confirm release-linux.yml run started (HARD FAILURE if not)
+    # Filter criteria:
+    #   workflow == release-linux.yml
+    #   event    == push
+    #   createdAt >= before_push_iso - 30s  (clock-skew tolerance)
+    #   headBranch == tag_name OR headSha == resolved_target
+    # =====================================================================
+    print_section("\nStep 8/9: Confirm release-linux.yml workflow run")
+    new_run = None
+    if dry:
+        print_info(
+            "  [DRY-RUN] Would filter `gh run list "
+            "--workflow=release-linux.yml --event=push` by createdAt >= "
+            "before_push - 30s AND (headBranch == tag OR headSha == "
+            "target). HARD FAILURE if no match within ~40 s."
+        )
+    else:
+        filter_floor_dt = before_push_dt - timedelta(seconds=30)
+        filter_floor_iso = filter_floor_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        print_info(
+            f"  Filter floor (before_push - 30s) = {filter_floor_iso}"
+        )
+        for attempt in range(8):  # up to ~40 s
+            r = _run_capture(
+                ["gh", "run", "list",
+                 "--workflow=release-linux.yml",
+                 "--event=push",
+                 "--limit", "20",
+                 "--json",
+                 "databaseId,event,headBranch,headSha,status,createdAt,url"],
+                config.project_root,
+            )
+            if r.returncode == 0:
+                try:
+                    runs = json.loads(r.stdout)
+                except json.JSONDecodeError:
+                    runs = []
+                for run in runs:
+                    if run.get("event") != "push":
+                        continue
+                    created_at = run.get("createdAt") or ""
+                    if created_at < filter_floor_iso:
+                        continue
+                    head_branch = run.get("headBranch") or ""
+                    head_sha = run.get("headSha") or ""
+                    if (head_branch != tag_name
+                            and head_sha != resolved_target):
+                        continue
+                    new_run = run
+                    break
+            if new_run is not None:
+                break
+            time.sleep(5)
+        if new_run is None:
+            print_error(
+                "  HARD FAILURE: release-linux.yml run not found within "
+                "40 s of tag push.\n"
+                "  Filter criteria:\n"
+                "    workflow  = release-linux.yml\n"
+                "    event     = push\n"
+                f"    createdAt >= {filter_floor_iso}\n"
+                f"    headBranch == {tag_name} OR headSha == "
+                f"{resolved_target[:12]}\n"
+            )
+            _emit_remediation_workflow_missing(tag_name)
+            return False
+        print_success(
+            f"  Found run {new_run['databaseId']} "
+            f"(status={new_run.get('status', 'unknown')}, "
+            f"createdAt={new_run.get('createdAt')})"
+        )
+
+    # =====================================================================
+    # Step 9: Summary + manual next steps
+    # =====================================================================
+    print_section("\nStep 9/9: Summary")
+    print_section(f"\n{'='*70}")
+    print_success(
+        f"RC-TAG {tag_name} COMPLETE (draft + prerelease)"
+        + (" [DRY-RUN]" if dry else "")
+    )
+    print_section(f"{'='*70}")
+    print_info(f"Tag      : {tag_name} -> {resolved_target}")
+    if not dry:
+        print_info(f"Tag obj  : {local_tag_obj_sha}")
+    if config.project_url:
+        print_info(
+            f"Release  : {config.project_url}/releases/tag/{tag_name}"
+        )
+    if not dry and new_run is not None:
+        url = new_run.get('url') or f"(run id {new_run['databaseId']})"
+        print_info(f"CI run   : {url}")
+        print_info(f"CI state : {new_run.get('status', 'unknown')}")
+    print_info("")
+    print_info("NEXT STEPS (manual, after CI passes and artifacts uploaded):")
+    print_info("  1. Smoke-test the release-linux.yml artifacts.")
+    print_info(f"  2. Publish: gh release edit {tag_name} --draft=false")
+    print()
+    return True
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -893,6 +1659,10 @@ Examples:
   %(prog)s prepare 1.0.0 --skip=windows,spark
                                         Skip multiple stages
   %(prog)s release 1.0.0                Create release (tag, push, GitHub)
+  %(prog)s rc-tag 1.0.0-rc3 --target <SHA> \\
+        --release-notes-file docs/release_notes/v1.0.0_draft.md
+                                        Tag an RC at an explicit SHA as a
+                                        draft, prerelease GitHub Release.
 
 Skippable stages: windows, spark, exceptions, all
 
@@ -903,7 +1673,7 @@ the appropriate release workflow.
 
     parser.add_argument(
         'action',
-        choices=['prepare', 'release', 'validate'],
+        choices=['prepare', 'release', 'validate', 'rc-tag'],
         help='Action to perform'
     )
 
@@ -942,6 +1712,39 @@ the appropriate release workflow.
         help=f'Skip specific stages (comma-separated). Available: {stage_list}, all'
     )
 
+    # rc-tag-specific arguments (ignored by other actions)
+    parser.add_argument(
+        '--target',
+        type=str,
+        default=None,
+        metavar='SHA',
+        help='[rc-tag] Explicit commit SHA to tag (must be ancestor of '
+             'origin/main).'
+    )
+    parser.add_argument(
+        '--tag-message',
+        type=str,
+        default=None,
+        metavar='MSG',
+        help='[rc-tag] Annotated-tag message (default: '
+             '"Release candidate <version>").'
+    )
+    parser.add_argument(
+        '--release-title',
+        type=str,
+        default=None,
+        metavar='TITLE',
+        help='[rc-tag] GitHub Release title (default: "Release <version>").'
+    )
+    parser.add_argument(
+        '--release-notes-file',
+        type=str,
+        default=None,
+        metavar='PATH',
+        help='[rc-tag] Path to release-notes markdown file. Relative paths '
+             'resolve from --project-root.'
+    )
+
     args = parser.parse_args()
 
     # Parse --skip into a set of stages
@@ -959,8 +1762,8 @@ the appropriate release workflow.
     else:
         args.skip_stages = set()
 
-    # Validate version is provided for prepare/release
-    if args.action in ['prepare', 'release', 'validate'] and not args.version:
+    # Validate version is provided for prepare/release/rc-tag
+    if args.action in ['prepare', 'release', 'validate', 'rc-tag'] and not args.version:
         print_error(f"Version is required for {args.action} action")
         parser.print_help()
         return 1
@@ -972,6 +1775,24 @@ the appropriate release workflow.
     ):
         print_error("Version must follow semantic versioning (e.g., 1.0.0, 1.0.0-dev)")
         return 1
+
+    # rc-tag-specific argument validation
+    if args.action == 'rc-tag':
+        missing = []
+        if not args.target:
+            missing.append('--target')
+        if not args.release_notes_file:
+            missing.append('--release-notes-file')
+        if missing:
+            print_error(
+                f"rc-tag action requires: {', '.join(missing)}"
+            )
+            return 1
+        if not re.match(r'^[0-9a-fA-F]{7,40}$', args.target):
+            print_error(
+                f"--target must be a 7-40 char hex SHA, got: {args.target!r}"
+            )
+            return 1
 
     # Determine project root
     if args.project_root:
@@ -1026,6 +1847,8 @@ the appropriate release workflow.
             success = prepare_release(config, adapter)
         elif args.action == 'release':
             success = create_release(config, adapter)
+        elif args.action == 'rc-tag':
+            success = create_rc_release(config, adapter, args)
         elif args.action == 'validate':
             # Future: add validation-only mode
             print_info("Validate action not yet implemented")

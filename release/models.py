@@ -43,6 +43,7 @@ class ReleaseAction(Enum):
     PREPARE = 'prepare'
     RELEASE = 'release'
     VALIDATE = 'validate'
+    RC_TAG = 'rc-tag'
 
 
 @dataclass
