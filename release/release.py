@@ -888,6 +888,145 @@ def _run_capture(cmd, cwd):
     )
 
 
+def _verify_remote_annotated_tag(
+    project_root,
+    tag_name,
+    expected_target_sha,
+    expected_message,
+):
+    """Verify a remote annotated tag against a target commit + message via
+    the GitHub Git Data API.
+
+    Why not `git ls-remote`: on GitHub's smart-HTTP protocol, an exact-ref
+    refspec like ``refs/tags/<tag>`` returns only the tag-object line and
+    omits the peeled ``^{}`` line. The protocol is allowed to do this for
+    exact-ref discovery (the peeled-commit advertisement is optional), so
+    verifying the target commit from ``git ls-remote`` alone is unreliable
+    on GitHub remotes. The Git Data API instead returns object types and
+    target SHAs as explicit JSON fields and is authoritative.
+
+    This function bit the rc-tag flow on adafmt v1.0.0-rc3 (2026-06-12).
+
+    Verifies, in order, all five of:
+      1. ``refs/tags/<tag>`` ref exists on the remote.
+      2. ref object type is ``"tag"`` (annotated; lightweight rejected).
+      3. tag object's ``object.type`` is ``"commit"``.
+      4. tag object's ``object.sha`` equals ``expected_target_sha``.
+      5. tag object's ``message`` equals ``expected_message`` after
+         trailing-newline normalisation on both sides.
+
+    The function is intentionally side-effect-free (read-only `gh api`
+    calls) and returns a tuple instead of printing, so it can be unit-
+    tested by mocking ``subprocess.run``.
+
+    Args:
+        project_root:        cwd for the ``gh`` CLI calls; ``gh`` auto-
+                             detects the GitHub repo from the cwd's
+                             git remote.
+        tag_name:            e.g. ``"v1.0.0-rc3"``.
+        expected_target_sha: full 40-char commit SHA the tag should peel
+                             to.
+        expected_message:    full annotated tag message expected on the
+                             remote. Trailing newlines are normalised
+                             out before comparison; internal whitespace,
+                             blank lines, and body structure are
+                             compared verbatim.
+
+    Returns:
+        ``(ok, diagnostic)``. On success, ``diagnostic`` is a short
+        one-line descriptor of what was verified. On failure,
+        ``diagnostic`` explains exactly which sub-check failed and why.
+    """
+    # 1. Resolve owner/repo so we can build absolute Git Data API paths.
+    r = _run_capture(
+        ["gh", "repo", "view", "--json", "owner,name",
+         "--jq", "\"\\(.owner.login)/\\(.name)\""],
+        project_root,
+    )
+    if r.returncode != 0 or not r.stdout.strip():
+        return False, (
+            f"gh repo view failed (rc={r.returncode}): "
+            f"{r.stderr.strip() or r.stdout.strip()}"
+        )
+    owner_repo = r.stdout.strip().strip('"')
+
+    # 2. Fetch the tag ref. Non-zero rc covers both "not found" and
+    # auth/network failure; either way, fail closed.
+    r = _run_capture(
+        ["gh", "api",
+         f"repos/{owner_repo}/git/refs/tags/{tag_name}",
+         "--jq", "{type: .object.type, sha: .object.sha}"],
+        project_root,
+    )
+    if r.returncode != 0:
+        return False, (
+            f"gh api repos/{owner_repo}/git/refs/tags/{tag_name} failed "
+            f"(rc={r.returncode}): {r.stderr.strip() or r.stdout.strip()}"
+        )
+    try:
+        ref_data = json.loads(r.stdout)
+    except json.JSONDecodeError as e:
+        return False, f"git/refs/tags JSON parse error: {e}; stdout={r.stdout!r}"
+
+    # 3. Reject lightweight tags. GitHub reports a lightweight tag's ref
+    # object.type as "commit" (it points straight at the commit, no
+    # intermediate tag object). Annotated tags report "tag".
+    ref_obj_type = ref_data.get("type")
+    if ref_obj_type != "tag":
+        return False, (
+            f"remote ref object type is {ref_obj_type!r}, expected 'tag' "
+            f"(annotated; lightweight tags are rejected)"
+        )
+    tag_obj_sha = ref_data.get("sha")
+    if not tag_obj_sha:
+        return False, "git/refs/tags response missing object.sha"
+
+    # 4. Fetch the tag object to get target type, target SHA, and message.
+    r = _run_capture(
+        ["gh", "api",
+         f"repos/{owner_repo}/git/tags/{tag_obj_sha}",
+         "--jq",
+         "{target_type: .object.type, target_sha: .object.sha, "
+         "message: .message}"],
+        project_root,
+    )
+    if r.returncode != 0:
+        return False, (
+            f"gh api repos/{owner_repo}/git/tags/{tag_obj_sha} failed "
+            f"(rc={r.returncode}): {r.stderr.strip() or r.stdout.strip()}"
+        )
+    try:
+        tag_data = json.loads(r.stdout)
+    except json.JSONDecodeError as e:
+        return False, f"git/tags JSON parse error: {e}; stdout={r.stdout!r}"
+
+    # 5. Verify target type, target SHA, and message.
+    target_type = tag_data.get("target_type")
+    if target_type != "commit":
+        return False, (
+            f"remote tag target type is {target_type!r}, expected 'commit'"
+        )
+    target_sha_remote = tag_data.get("target_sha") or ""
+    if target_sha_remote != expected_target_sha:
+        return False, (
+            f"remote tag target {target_sha_remote} != expected "
+            f"{expected_target_sha}"
+        )
+    remote_msg = (tag_data.get("message") or "").rstrip('\n')
+    expected_norm = (expected_message or "").rstrip('\n')
+    if remote_msg != expected_norm:
+        return False, (
+            f"remote tag message mismatch — "
+            f"expected ({len(expected_norm)} chars): {expected_norm!r}; "
+            f"remote ({len(remote_msg)} chars): {remote_msg!r}"
+        )
+
+    return True, (
+        f"obj={tag_obj_sha[:12]}, target={target_sha_remote[:12]}, "
+        f"msg={len(remote_msg)} chars"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Partial-state remediation messages for rc-tag.
 #
@@ -1413,55 +1552,41 @@ def create_rc_release(config, adapter, args) -> bool:
         print_success(f"  Pushed tag {tag_name}")
 
     # =====================================================================
-    # Step 5: Verify remote tag peels to target SHA
+    # Step 5: Verify remote tag (annotated + correct target + correct
+    # message) via GitHub Git Data API dereference.
+    #
+    # Note: a `git ls-remote --tags origin refs/tags/<tag>` exact-ref
+    # query on GitHub smart-HTTP returns only the tag-object line, never
+    # the peeled `^{}` line — so verifying the target commit from
+    # ls-remote alone is unreliable. The Git Data API is authoritative.
+    # See _verify_remote_annotated_tag for the full rationale.
     # =====================================================================
-    print_section("\nStep 5/9: Verify remote tag")
+    print_section(
+        "\nStep 5/9: Verify remote tag (via gh api Git Data dereference)"
+    )
     if dry:
+        _exp_msg_norm = (tag_message or "").rstrip('\n')
         print_info(
-            f"  [DRY-RUN] Would verify origin {tag_name} -> "
-            f"{resolved_target[:12]}"
+            f"  [DRY-RUN] Would verify via gh api: "
+            f"refs/tags/{tag_name} object type=tag, "
+            f"target type=commit, target SHA={resolved_target[:12]}, "
+            f"message matches expected ({len(_exp_msg_norm)} chars)"
         )
     else:
-        r = _run_capture(
-            ["git", "ls-remote", "--tags", "origin",
-             f"refs/tags/{tag_name}"],
-            config.project_root,
+        ok, diag = _verify_remote_annotated_tag(
+            project_root=config.project_root,
+            tag_name=tag_name,
+            expected_target_sha=resolved_target,
+            expected_message=tag_message,
         )
-        if r.returncode != 0 or r.stdout.strip() == "":
+        if not ok:
             print_error(
-                f"  Remote tag {tag_name} not visible after push:\n"
-                f"  stdout={r.stdout!r} stderr={r.stderr.strip()!r}"
-            )
-            _emit_remediation_remote_tag_only(tag_name)
-            return False
-        # `ls-remote` prints "<obj-sha>\t<ref>" lines. For an annotated tag
-        # it also prints a peeled "<commit-sha>\trefs/tags/<tag>^{}" line —
-        # that's the commit we compare against resolved_target.
-        peeled = None
-        for line in r.stdout.strip().splitlines():
-            parts = line.split(None, 1)
-            if len(parts) != 2:
-                continue
-            sha, ref = parts[0], parts[1].strip()
-            if ref == f"refs/tags/{tag_name}^{{}}":
-                peeled = sha
-                break
-        if peeled is None:
-            print_error(
-                "  Remote tag has no peeled ref — likely a lightweight tag, "
-                "which is rejected. ls-remote output:\n"
-                f"  {r.stdout.strip()}"
-            )
-            _emit_remediation_remote_tag_only(tag_name)
-            return False
-        if peeled != resolved_target:
-            print_error(
-                f"  Remote tag commit {peeled} != expected {resolved_target}"
+                f"  Remote tag verification failed: {diag}"
             )
             _emit_remediation_remote_tag_only(tag_name)
             return False
         print_success(
-            f"  Remote tag {tag_name} -> {peeled} "
+            f"  Remote tag {tag_name} verified — {diag} "
             f"(local obj={local_tag_obj_sha[:12]})"
         )
 
