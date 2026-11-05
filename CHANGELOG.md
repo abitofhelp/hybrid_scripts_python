@@ -7,6 +7,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- `makefile/container_run.py` always passes `HOST_USER`, `HOST_UID`, and
+  `HOST_GID`, for every container CLI, as required by dev_containers
+  v2.0.0 and later. It refuses to launch on native Windows (no POSIX UID or
+  GID; use a WSL2 shell) and when the user name is not valid inside the
+  container. Podman now runs with `--userns=keep-id --user 0:0`. The
+  `--root` diagnostic option is removed (dev_containers#6).
+
+### Added
+
+- `tests/test_container_run.py`: host identity and command-assembly tests
+  for the launcher.
+
+
 ### Changed
 
 - `arch_guard` now enforces `Library_Standalone = "standard"` on Ada

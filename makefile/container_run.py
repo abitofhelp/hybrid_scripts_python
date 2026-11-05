@@ -14,7 +14,7 @@
 #
 # Usage:
 #   Direct invocation:
-#     python3 container_run.py --image dev-container-ada-system
+#     python3 container_run.py --image dev-container-ada
 #     python3 container_run.py --image dev-container-go --source ~/Go/src
 #     python3 container_run.py --image dev-container-ada --cli docker --dry-run
 #
@@ -32,13 +32,15 @@
 #   the highest existing container with that prefix (e.g.,
 #   dev-container-ada-1, dev-container-ada-2).
 #
-#   Host identity (UID, GID, username) is passed via environment
-#   variables for runtime user adaptation by entrypoint.sh.  On
-#   Windows (native), UID/GID are unavailable and the container
-#   falls back to its default user (dev:1000:1000).
+#   Host identity (HOST_USER, HOST_UID, HOST_GID) is required by every
+#   dev_containers image (v2.0.0 and later); the container refuses to
+#   start without it.  It is always passed, for every CLI.  Native
+#   Windows has no POSIX UID or GID, so the launcher stops and asks the
+#   user to launch from a WSL2 shell instead.
 #
-#   Podman rootless uses --userns=keep-id instead of HOST_*
-#   environment variables.
+#   Podman rootless uses --userns=keep-id (the host UID keeps its value in
+#   the container) and --user 0:0, so the entrypoint starts as container
+#   root, creates the account, and drops to it.
 #
 # See Also:
 #   common.py     - shared utilities (OS detection, command helpers)
@@ -49,6 +51,7 @@ import argparse
 import getpass
 import os
 import platform
+import re
 import shlex
 import subprocess
 import sys
@@ -252,23 +255,44 @@ def next_container_name(cli: str, image: str) -> str:
 # Host Identity
 # ==============================================================================
 
+class HostIdentityError(Exception):
+    """The host identity required by the container cannot be determined."""
+
+
+# The user-name rule enforced by the containers' entrypoint.sh.
+_VALID_USER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+
+
 def get_host_identity() -> dict[str, str]:
-    """Collect host user identity for the container entrypoint.
+    """Collect the host identity that every dev container requires.
 
-    On POSIX systems, returns HOST_USER, HOST_UID, and HOST_GID.
-    On Windows (native), UID and GID are unavailable; only HOST_USER
-    is returned and the container entrypoint falls back to its default
-    user (dev:1000:1000).
+    Returns HOST_USER, HOST_UID, and HOST_GID.
+
+    Raises:
+        HostIdentityError: on native Windows (no POSIX UID or GID; launch
+            from a WSL2 shell instead), or when the user name does not meet
+            the container's naming rule.
     """
-    identity: dict[str, str] = {"HOST_USER": getpass.getuser()}
-
-    # os.getuid() / os.getgid() exist on POSIX but not on Windows.
-    if hasattr(os, "getuid"):
-        identity["HOST_UID"] = str(os.getuid())
-    if hasattr(os, "getgid"):
-        identity["HOST_GID"] = str(os.getgid())
-
-    return identity
+    if not (hasattr(os, "getuid") and hasattr(os, "getgid")):
+        raise HostIdentityError(
+            "This host has no POSIX user and group IDs, which the dev "
+            "containers require. On Windows, launch the container from a "
+            "WSL2 shell, from your project directory inside the WSL "
+            "file system."
+        )
+    user = getpass.getuser()
+    if not _VALID_USER.match(user):
+        raise HostIdentityError(
+            f"The user name '{user}' is not valid inside the container "
+            "(lowercase letters, digits, '_' and '-'; at most 32 "
+            "characters). Launch the container from an account whose name "
+            "meets that rule."
+        )
+    return {
+        "HOST_USER": user,
+        "HOST_UID": str(os.getuid()),
+        "HOST_GID": str(os.getgid()),
+    }
 
 
 # ==============================================================================
@@ -283,7 +307,6 @@ def build_run_command(
     source_dir: str,
     workdir: str,
     host_identity: dict[str, str],
-    root: bool = False,
 ) -> list[str]:
     """Assemble the ``<cli> run`` argument list.
 
@@ -294,23 +317,21 @@ def build_run_command(
         source_dir:      Host directory to bind-mount.
         workdir:         Mount point inside the container.
         host_identity:   HOST_USER / HOST_UID / HOST_GID mapping.
-        root:            If True, bypass the entrypoint and run as UID 0.
     """
     interactive = ["-it"] if sys.stdin.isatty() else []
 
     cmd: list[str] = [cli, "run", *interactive, "--rm",
                        "--name", container_name]
 
-    if root:
-        # Diagnostic mode: bypass entrypoint, run as root.
-        cmd.extend(["--entrypoint", "/usr/bin/zsh", "-u", "0"])
-    elif cli == "podman":
-        # Podman rootless maps the host user directly; no HOST_* needed.
-        cmd.append("--userns=keep-id")
-    else:
-        # Docker / nerdctl: pass host identity for entrypoint adaptation.
-        for key, value in host_identity.items():
-            cmd.extend(["-e", f"{key}={value}"])
+    if cli == "podman":
+        # Keep the host UID in the container, and start the entrypoint as
+        # container root (a subordinate UID, not host root) so it can create
+        # the account before dropping to it.
+        cmd.extend(["--userns=keep-id", "--user", "0:0"])
+
+    # Every CLI: the required host identity.
+    for key, value in host_identity.items():
+        cmd.extend(["-e", f"{key}={value}"])
 
     cmd.extend([
         "-v", f"{source_dir}:{workdir}",
@@ -336,7 +357,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--image",
         required=True,
-        help="Container image name (e.g., dev-container-ada-system).",
+        help="Container image name (e.g., dev-container-ada).",
     )
     parser.add_argument(
         "--source",
@@ -374,11 +395,6 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--workdir",
         default=DEFAULT_WORKDIR,
         help=f"Container working directory (default: {DEFAULT_WORKDIR}).",
-    )
-    parser.add_argument(
-        "--root",
-        action="store_true",
-        help="Run as root, bypassing the entrypoint (diagnostic).",
     )
     parser.add_argument(
         "--dry-run",
@@ -426,7 +442,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     container_name = next_container_name(cli, args.image)
 
     # -- Collect host identity -------------------------------------------
-    host_identity = get_host_identity()
+    try:
+        host_identity = get_host_identity()
+    except HostIdentityError as exc:
+        print_error(str(exc))
+        return 2
 
     # -- Assemble command ------------------------------------------------
     cmd = build_run_command(
@@ -436,7 +456,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         source_dir=str(source),
         workdir=args.workdir,
         host_identity=host_identity,
-        root=args.root,
     )
 
     # -- Execute or dry-run ----------------------------------------------
