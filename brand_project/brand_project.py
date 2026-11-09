@@ -12,7 +12,7 @@
 #
 # Usage:
 #   python3 brand_project.py --git-repo https://github.com/user/my_app.git
-#   python3 brand_project.py --git-repo github.com/user/my_app
+#   python3 brand_project.py --git-repo github.com/user/my_app -o ../
 #   python3 brand_project.py --git-repo github.com/user/my_app --dry-run
 #
 # ==============================================================================
